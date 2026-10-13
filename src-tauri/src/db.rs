@@ -459,6 +459,17 @@ impl Db {
 
     // Cards, marcações e uso
 
+    /// O entrevistador fez a pergunta sugerida.
+    pub fn mark_card_used(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE cards SET priority = 'usada' WHERE id = ?1",
+            params![id],
+        )
+        .map_err(err)?;
+        Ok(())
+    }
+
     pub fn insert_card(
         &self,
         session_id: i64,

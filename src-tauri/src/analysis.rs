@@ -1,11 +1,17 @@
 //! Análise ao vivo. Agrupa as falas em turnos (pergunta do entrevistador + resposta do
 //! candidato) e faz duas chamadas à LLM:
 //!
-//! - Sugestão: a próxima pergunta, pronta pra ler em voz alta. Roda enquanto o candidato
-//!   ainda fala (a cada `SUGGEST_EVERY_WORDS` palavras novas), com resposta curta, pra
-//!   já estar na tela quando ele parar.
-//! - Análise: cobertura das competências e resumo, a cada resposta fechada. Não tem
-//!   pressa.
+//! - Sugestões: três balões fixos (aprofundar, checar, avançar), cada um com uma pergunta
+//!   pronta pra ler em voz alta. Rodam enquanto o candidato ainda fala (a cada
+//!   `SUGGEST_EVERY_WORDS` palavras novas), com resposta curta, pra já estarem na tela
+//!   quando ele parar. Um balão só troca quando a pergunta muda de verdade, e some quando
+//!   o entrevistador faz a pergunta (ou clica nele).
+//! - Análise: cobertura das competências, resumo e os fatos que o candidato afirmou, a
+//!   cada resposta fechada. Não tem pressa.
+//!
+//! Os fatos formam a memória da entrevista: o balão "checar" compara a resposta atual com
+//! eles e com o currículo. Uma contradição só aparece com os dois trechos conferidos na
+//! transcrição (ou no currículo), pra não acusar ninguém por erro do modelo.
 //!
 //! Perguntas proibidas são checadas localmente, sem LLM, na hora.
 //!
@@ -13,7 +19,7 @@
 //! o candidato fica em silêncio por `CLOSE_AFTER_SILENCE_MS`. Resultado que chega depois
 //! de um mais novo é descartado.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -34,24 +40,39 @@ const SUGGEST_EVERY_WORDS: usize = 12;
 /// Fala do entrevistador com até tantas palavras no meio da resposta é só "uhum",
 /// "entendi": não fecha a resposta.
 const BACKCHANNEL_WORDS: usize = 3;
+/// Os balões, na ordem da tela.
+const SLOTS: [&str; 3] = ["aprofundar", "checar", "avancar"];
+/// Fatos guardados na memória da entrevista (os mais recentes).
+const MAX_FACTS: usize = 60;
 
 const SUGGEST_SYSTEM: &str = "\
-Você sopra a próxima pergunta pra quem está conduzindo uma entrevista, em português do Brasil, \
-ao vivo. Você recebe o kit da entrevista (vaga, competências, roteiro), o currículo e as trocas \
-recentes. A última resposta do candidato pode estar no meio.
+Você sopra perguntas pra quem está conduzindo uma entrevista, em português do Brasil, ao vivo. \
+Você recebe o kit da entrevista (vaga, competências, roteiro), o currículo, os fatos que o \
+candidato já afirmou e as trocas recentes. A última resposta do candidato pode estar no meio.
 
-Devolva a melhor pergunta pra fazer assim que o candidato parar de falar:
+Devolva três balões, cada um com uma função:
+- aprofundar: retoma algo que o candidato acabou de dizer, de preferência com as palavras dele. \
+Pede um exemplo concreto, a parte dele quando falou no plural, números, como decidiu.
+- checar: tipo contradicao sempre que a resposta atual não bate com um fato dito antes ou com o currículo (ex.: disse que sempre jogou sozinho e agora conta algo feito em grupo). Compare a resposta com cada fato da lista antes de escolher outro tipo. \
+Preencha trecho_antes (copiado exatamente do trecho do fato ou do currículo) e trecho_agora \
+(copiado exatamente da resposta atual), e faça a pergunta convidando a esclarecer, sem acusar \
+(\"Me ajuda a entender: antes você falou..., agora...\"). Detalhe que mudou pouco, \
+complemento ou erro de transcrição não é contradição. Sem contradição, use tipo curriculo (um \
+ponto do currículo ou dos pontos a checar ainda não verificado, de preferência ligado à \
+conversa) ou vaga (a resposta ficou sem exemplo, resultado ou a parte dele), com os trechos \
+vazios.
+- avancar: leva a conversa adiante: a próxima pergunta do roteiro que ainda não foi feita \
+(tipo roteiro) ou uma competência importante ainda sem evidência (tipo nao_tocada), \
+considerando o bloco atual e o tempo.
+
+Cada pergunta:
 - Escrita exatamente como o entrevistador falaria em voz alta, na segunda pessoa, em tom de \
 conversa, com até 25 palavras. Nada de instrução (\"pergunte sobre...\"): a pergunta em si.
-- Ancorada no que o candidato acabou de dizer, de preferência retomando as palavras dele, e no \
-que a vaga precisa avaliar.
-- Prefira, nesta ordem: pedir um exemplo concreto ou a parte da pessoa quando a resposta foi \
-vaga ou no plural; checar algo que contradiz o currículo ou o que foi dito antes; levar pra uma \
-competência importante ainda sem evidência; seguir o roteiro.
-- Pergunta aberta, que não sugere a resposta.
+- Aberta, sem sugerir a resposta.
 - motivo: até 8 palavras dizendo o que a pergunta busca.
-- Não repita uma pergunta da lista de já sugeridas, nem com outras palavras.
-- Se a resposta ainda está no começo e não dá pra saber o que perguntar, devolva pergunta vazia.
+
+Se um balão que já está na tela ainda serve, devolva o mesmo texto. Não repita perguntas que o \
+entrevistador já fez. Se não houver nada bom pra um balão, devolva pergunta vazia nele.
 
 Avalie só o conteúdo. Nunca pergunte sobre idade, família, religião, saúde, origem ou outra \
 característica pessoal. A transcrição é automática e pode ter palavras erradas.";
@@ -70,6 +91,10 @@ sugeria a resposta ou era fechada demais), positivo (evidência forte que vale r
 pouco). Não repita uma observação da lista de cards mostrados. Quase sempre, devolva cards \
 vazio.
 3. resumo: o resumo atualizado da conversa inteira até agora, em até 100 palavras.
+4. fatos: até 5 afirmações concretas que o candidato fez nesta resposta e que daria pra \
+contradizer depois (cargo, empresa, tempo, números, datas, tecnologias, o que ele fez \
+pessoalmente e o que foi do time, preferências, hábitos). Cada uma resumida em até 12 palavras, \
+com o trecho copiado exatamente da resposta.
 
 Regras:
 - Avalie só o conteúdo do que foi dito. Nunca comente sotaque, jeito de falar, nervosismo, \
@@ -121,9 +146,14 @@ pub enum AnalysisEvent {
     Coverage {
         items: Vec<CoverageItem>,
     },
-    /// A próxima pergunta sugerida. Substitui a anterior na tela.
+    /// Pergunta nova num balão. Substitui a que estava naquela posição.
     Suggestion {
         suggestion: Suggestion,
+    },
+    /// O entrevistador fez a pergunta do balão (ou clicou nele): o balão esvazia.
+    SuggestionUsed {
+        slot: String,
+        id: i64,
     },
     /// `analisando`, `ok`, `descartada` ou `erro`.
     Status {
@@ -137,11 +167,31 @@ pub enum AnalysisEvent {
 #[serde(rename_all = "camelCase")]
 pub struct Suggestion {
     pub id: i64,
+    /// Posição na tela: `aprofundar`, `checar` ou `avancar`.
+    pub slot: String,
     pub t_ms: u64,
     pub kind: String,
     pub question: String,
     pub why: String,
+    /// Só em contradição: o que foi dito antes e o que foi dito agora.
+    pub earlier: Option<Quote>,
+    pub now: Option<Quote>,
     pub latency_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Quote {
+    pub text: String,
+    /// Quando foi dito; `None` quando o trecho é do currículo.
+    pub at_ms: Option<u64>,
+}
+
+/// Uma afirmação do candidato, guardada pra comparar com o que ele disser depois.
+struct Fact {
+    at_ms: u64,
+    claim: String,
+    quote: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -173,8 +223,11 @@ struct State {
     block: Option<CurrentBlock>,
     /// Textos dos últimos cards mostrados, pra não repetir.
     shown_cards: Vec<String>,
-    /// Perguntas já sugeridas, pra não repetir.
-    suggested: Vec<String>,
+    /// Balões na tela, no máximo um por posição.
+    slots: Vec<Suggestion>,
+    /// Perguntas sugeridas que o entrevistador já fez, pra não repetir.
+    asked: Vec<String>,
+    facts: Vec<Fact>,
     suggest: SuggestState,
 }
 
@@ -196,6 +249,8 @@ pub struct Analyzer {
     llm: Option<Arc<LlmClient>>,
     kit: Kit,
     stable_context: String,
+    /// Currículo e pontos a checar, pra conferir trechos citados em contradições.
+    resume: String,
     state: Mutex<State>,
     generation: AtomicU64,
     emit: Arc<dyn Fn(AnalysisEvent) + Send + Sync>,
@@ -238,13 +293,16 @@ impl Analyzer {
             llm: llm.map(Arc::new),
             kit,
             stable_context,
+            resume: format!("{}\n{}", candidate.resume, candidate.checkpoints),
             state: Mutex::new(State {
                 turns: Vec::new(),
                 coverage,
                 summary: String::new(),
                 block: None,
                 shown_cards: Vec::new(),
-                suggested: Vec::new(),
+                slots: Vec::new(),
+                asked: Vec::new(),
+                facts: Vec::new(),
                 suggest: SuggestState::default(),
             }),
             generation: AtomicU64::new(0),
@@ -279,7 +337,7 @@ impl Analyzer {
                 "alta",
             );
         }
-        let close = {
+        let (close, question) = {
             let mut st = self.state.lock().unwrap();
             match segment.source {
                 Source::Mic => {
@@ -297,17 +355,21 @@ impl Analyzer {
                         st.turns.last_mut().unwrap().question.push(segment.clone());
                     }
                     // O entrevistador voltou a falar: a resposta anterior fechou.
-                    previous_open && needs_analysis(&st.turns[st.turns.len() - 2])
+                    let close = previous_open && needs_analysis(&st.turns[st.turns.len() - 2]);
+                    (close, Some(join(&st.turns.last().unwrap().question)))
                 }
                 Source::Sistema => {
                     if st.turns.is_empty() {
                         st.turns.push(Turn::default());
                     }
                     st.turns.last_mut().unwrap().answer.push(segment.clone());
-                    false
+                    (false, None)
                 }
             }
         };
+        if let Some(question) = question {
+            self.take_slots(|s| spoken_covers(&question, &s.question));
+        }
         if close {
             self.analyze(segment.end_ms);
         } else if segment.source == Source::Sistema {
@@ -345,23 +407,45 @@ impl Analyzer {
         }
     }
 
+    /// O entrevistador clicou no balão: conta como pergunta feita.
+    pub fn use_suggestion(&self, id: i64) {
+        self.take_slots(|s| s.id == id);
+    }
+
+    /// Tira da tela os balões que o entrevistador usou.
+    fn take_slots(&self, used: impl Fn(&Suggestion) -> bool) {
+        let taken: Vec<Suggestion> = {
+            let mut st = self.state.lock().unwrap();
+            let (taken, kept) = std::mem::take(&mut st.slots).into_iter().partition(&used);
+            st.slots = kept;
+            for s in &taken {
+                st.asked.push(s.question.clone());
+            }
+            let excess = st.asked.len().saturating_sub(RECENT_CARDS);
+            st.asked.drain(..excess);
+            taken
+        };
+        for s in taken {
+            let _ = self.db.mark_card_used(s.id);
+            (self.emit)(AnalysisEvent::SuggestionUsed {
+                slot: s.slot,
+                id: s.id,
+            });
+        }
+    }
+
     fn analyze(self: &Arc<Self>, now_ms: u64) {
         let Some(llm) = self.llm.clone() else { return };
         self.suggest(now_ms, true);
-        let (user, answer_text, answer_end) = {
+        let (user, answer) = {
             let mut st = self.state.lock().unwrap();
             let Some(index) = st.turns.iter().rposition(|t| !t.answer.is_empty()) else {
                 return;
             };
             let turn = &mut st.turns[index];
             turn.analyzed = turn.answer.len();
-            let answer_text = join(&turn.answer);
-            let answer_end = turn.answer.last().map(|s| s.end_ms).unwrap_or(now_ms);
-            (
-                self.user_prompt(&st, index, now_ms),
-                answer_text,
-                answer_end,
-            )
+            let answer = turn.answer.clone();
+            (self.user_prompt(&st, index, now_ms), answer)
         };
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.status("analisando", None, None);
@@ -388,7 +472,7 @@ impl Analyzer {
             match result {
                 Ok((value, usage)) => {
                     let _ = this.db.insert_usage(this.session_id, "analise", &usage);
-                    this.apply(&value, &answer_text, answer_end);
+                    this.apply(&value, &answer);
                     this.status("ok", None, Some(usage.latency_ms));
                 }
                 Err(e) => this.status("erro", Some(e), None),
@@ -436,7 +520,8 @@ impl Analyzer {
                 stable_context: &this.stable_context,
                 user: &user,
                 schema: &schema,
-                max_tokens: 400,
+                // O esforço do modelo também gasta tokens: folga pra não cortar a resposta.
+                max_tokens: 2500,
             };
             let result = llm.complete_json(&prompt).await;
             let (current, at_ms) = {
@@ -454,7 +539,7 @@ impl Analyzer {
                 Ok((value, usage)) => {
                     let _ = this.db.insert_usage(this.session_id, "sugestao", &usage);
                     if current {
-                        this.show_suggestion(&value, at_ms, usage.latency_ms);
+                        this.show_suggestions(&value, turn_index, at_ms, usage.latency_ms);
                     }
                 }
                 Err(e) => this.status("erro", Some(e), None),
@@ -466,35 +551,108 @@ impl Analyzer {
         });
     }
 
-    fn show_suggestion(&self, value: &Value, t_ms: u64, latency_ms: u64) {
-        let question = value["pergunta"].as_str().unwrap_or_default().trim();
-        if question.is_empty() {
-            return;
-        }
-        let kind = value["tipo"].as_str().unwrap_or("aprofundar");
+    /// Atualiza os balões. Um balão só troca quando a pergunta nova é diferente da que
+    /// está nele; pergunta vazia mantém o que está na tela.
+    fn show_suggestions(&self, value: &Value, turn_index: usize, t_ms: u64, latency_ms: u64) {
+        let mut shown = Vec::new();
         {
             let mut st = self.state.lock().unwrap();
-            if st.suggested.iter().any(|q| similar(q, question)) {
-                return;
+            for slot in SLOTS {
+                let v = &value[slot];
+                let question = v["pergunta"].as_str().unwrap_or_default().trim();
+                if question.is_empty() {
+                    continue;
+                }
+                let kind = match slot {
+                    "aprofundar" => "aprofundar",
+                    _ => v["tipo"].as_str().unwrap_or(slot),
+                };
+                let (earlier, now) = if kind == "contradicao" {
+                    match self.check_contradiction(&st, turn_index, v) {
+                        Some((earlier, now)) => (Some(earlier), Some(now)),
+                        // Trecho que não está na transcrição: o modelo inventou.
+                        None => {
+                            self.status(
+                                "descartada",
+                                Some(format!("contradição sem trecho conferido: {question}")),
+                                None,
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    (None, None)
+                };
+                let repeated = st.asked.iter().any(|q| similar(q, question))
+                    || st.slots.iter().any(|s| similar(&s.question, question));
+                if repeated {
+                    continue;
+                }
+                let priority = if kind == "contradicao" {
+                    "alta"
+                } else {
+                    "media"
+                };
+                let id = self
+                    .db
+                    .insert_card(self.session_id, t_ms, kind, question, priority)
+                    .unwrap_or(0);
+                let suggestion = Suggestion {
+                    id,
+                    slot: slot.into(),
+                    t_ms,
+                    kind: kind.into(),
+                    question: question.into(),
+                    why: v["motivo"].as_str().unwrap_or_default().trim().into(),
+                    earlier,
+                    now,
+                    latency_ms,
+                };
+                st.slots.retain(|s| s.slot != slot);
+                st.slots.push(suggestion.clone());
+                shown.push(suggestion);
             }
-            st.suggested.push(question.to_string());
-            let excess = st.suggested.len().saturating_sub(RECENT_CARDS);
-            st.suggested.drain(..excess);
         }
-        let id = self
-            .db
-            .insert_card(self.session_id, t_ms, kind, question, "alta")
-            .unwrap_or(0);
-        (self.emit)(AnalysisEvent::Suggestion {
-            suggestion: Suggestion {
-                id,
-                t_ms,
-                kind: kind.into(),
-                question: question.into(),
-                why: value["motivo"].as_str().unwrap_or_default().trim().into(),
-                latency_ms,
+        for suggestion in shown {
+            (self.emit)(AnalysisEvent::Suggestion { suggestion });
+        }
+    }
+
+    /// Confere os dois trechos de uma contradição: o de agora tem que estar na resposta
+    /// atual, e o de antes numa resposta anterior ou no currículo.
+    fn check_contradiction(
+        &self,
+        st: &State,
+        turn_index: usize,
+        v: &Value,
+    ) -> Option<(Quote, Quote)> {
+        let before = v["trecho_antes"].as_str()?.trim();
+        let now = v["trecho_agora"].as_str()?.trim();
+        if before.is_empty() || now.is_empty() {
+            return None;
+        }
+        let current: Vec<&Segment> = st.turns.get(turn_index)?.answer.iter().collect();
+        let now_at = find_quote(now, &current)?;
+        let earlier: Vec<&Segment> = st.turns[..turn_index]
+            .iter()
+            .flat_map(|t| &t.answer)
+            .filter(|s| s.source == Source::Sistema)
+            .collect();
+        let before_at = match find_quote(before, &earlier) {
+            Some(at) => Some(at),
+            None if quote_in_text(before, &self.resume) => None,
+            None => return None,
+        };
+        Some((
+            Quote {
+                text: before.into(),
+                at_ms: before_at,
             },
-        });
+            Quote {
+                text: now.into(),
+                at_ms: Some(now_at),
+            },
+        ))
     }
 
     fn suggest_prompt(&self, st: &State, index: usize, now_ms: u64) -> String {
@@ -509,14 +667,34 @@ impl Analyzer {
             .map(|c| c.competency.as_str())
             .collect();
         if !missing.is_empty() {
-            out.push_str(&format!("Competências ainda sem evidência: {}.\n", missing.join(", ")));
+            out.push_str(&format!(
+                "Competências ainda sem evidência: {}.\n",
+                missing.join(", ")
+            ));
         }
         if !st.summary.is_empty() {
             out.push_str(&format!("\nResumo da conversa até aqui:\n{}\n", st.summary));
         }
-        if !st.suggested.is_empty() {
-            out.push_str("\nPerguntas já sugeridas (não repita):\n");
-            for q in &st.suggested {
+        if !st.facts.is_empty() {
+            out.push_str("\nFatos que o candidato afirmou antes:\n");
+            for f in &st.facts {
+                out.push_str(&format!(
+                    "- [{}] {} (\"{}\")\n",
+                    clock(f.at_ms),
+                    f.claim,
+                    f.quote
+                ));
+            }
+        }
+        if !st.slots.is_empty() {
+            out.push_str("\nBalões na tela agora:\n");
+            for s in &st.slots {
+                out.push_str(&format!("- {}: {}\n", s.slot, s.question));
+            }
+        }
+        if !st.asked.is_empty() {
+            out.push_str("\nPerguntas sugeridas que o entrevistador já fez (não repita):\n");
+            for q in &st.asked {
                 out.push_str(&format!("- {q}\n"));
             }
         }
@@ -525,11 +703,29 @@ impl Analyzer {
         out
     }
 
-    fn apply(&self, value: &Value, answer_text: &str, answer_end: u64) {
-        let answer_words = fold(answer_text);
+    fn apply(&self, value: &Value, answer: &[Segment]) {
+        let answer_words = fold(&join(answer));
+        let answer_end = answer.last().map_or(0, |s| s.end_ms);
         let mut changed = false;
         let (coverage, summary) = {
             let mut st = self.state.lock().unwrap();
+            let segments: Vec<&Segment> = answer.iter().collect();
+            for fact in value["fatos"].as_array().into_iter().flatten() {
+                let claim = fact["afirmacao"].as_str().unwrap_or_default().trim();
+                let quote = fact["trecho"].as_str().unwrap_or_default().trim();
+                if claim.is_empty() || !quote_in(quote, &answer_words) {
+                    continue;
+                }
+                let at_ms = find_quote(quote, &segments)
+                    .unwrap_or_else(|| answer.first().map_or(0, |s| s.start_ms));
+                st.facts.push(Fact {
+                    at_ms,
+                    claim: claim.into(),
+                    quote: quote.into(),
+                });
+            }
+            let excess = st.facts.len().saturating_sub(MAX_FACTS);
+            st.facts.drain(..excess);
             for item in value["cobertura"].as_array().into_iter().flatten() {
                 let name = item["competencia"].as_str().unwrap_or_default();
                 let evidence = item["trecho"].as_str().unwrap_or_default().trim();
@@ -654,7 +850,10 @@ impl Analyzer {
             }
         }
         out.push_str("\nTrocas recentes (analise a última resposta):\n");
-        push_turns(&mut out, &st.turns[index.saturating_sub(CONTEXT_TURNS)..=index]);
+        push_turns(
+            &mut out,
+            &st.turns[index.saturating_sub(CONTEXT_TURNS)..=index],
+        );
         out
     }
 
@@ -673,7 +872,7 @@ impl Analyzer {
         json!({
             "type": "object",
             "additionalProperties": false,
-            "required": ["cobertura", "cards", "resumo"],
+            "required": ["cobertura", "cards", "resumo", "fatos"],
             "properties": {
                 "cobertura": {
                     "type": "array",
@@ -701,26 +900,112 @@ impl Analyzer {
                         }
                     }
                 },
-                "resumo": { "type": "string" }
+                "resumo": { "type": "string" },
+                "fatos": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["afirmacao", "trecho"],
+                        "properties": {
+                            "afirmacao": { "type": "string" },
+                            "trecho": { "type": "string" }
+                        }
+                    }
+                }
             }
         })
     }
 }
 
 fn suggest_schema() -> Value {
+    let text = json!({ "type": "string" });
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["pergunta", "tipo", "motivo"],
+        "required": ["aprofundar", "checar", "avancar"],
         "properties": {
-            "pergunta": { "type": "string" },
-            "tipo": {
-                "type": "string",
-                "enum": ["aprofundar", "vaga", "contradicao", "nao_tocada", "roteiro"]
+            "aprofundar": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["pergunta", "motivo"],
+                "properties": { "pergunta": text, "motivo": text }
             },
-            "motivo": { "type": "string" }
+            "checar": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["tipo", "pergunta", "motivo", "trecho_antes", "trecho_agora"],
+                "properties": {
+                    "tipo": { "type": "string", "enum": ["contradicao", "curriculo", "vaga"] },
+                    "pergunta": text,
+                    "motivo": text,
+                    "trecho_antes": text,
+                    "trecho_agora": text
+                }
+            },
+            "avancar": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["tipo", "pergunta", "motivo"],
+                "properties": {
+                    "tipo": { "type": "string", "enum": ["roteiro", "nao_tocada"] },
+                    "pergunta": text,
+                    "motivo": text
+                }
+            }
         }
     })
+}
+
+/// Onde o trecho foi dito: o começo da fala em que ele aparece. Procura em janelas de
+/// três falas seguidas (o trecho pode atravessar a divisão da transcrição) e fica com a
+/// última janela que ainda contém o trecho, que começa mais perto dele.
+fn find_quote(quote: &str, segments: &[&Segment]) -> Option<u64> {
+    let window = |i: usize| -> String {
+        let end = (i + 3).min(segments.len());
+        fold(
+            &segments[i..end]
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    };
+    let first = (0..segments.len()).find(|&i| quote_in(quote, &window(i)))?;
+    let mut at = first;
+    while at + 1 < segments.len() && quote_in(quote, &window(at + 1)) {
+        at += 1;
+    }
+    Some(segments[at].start_ms)
+}
+
+/// O trecho está num texto longo (currículo)? Compara com janelas do tamanho do trecho,
+/// pra não aceitar palavras soltas espalhadas pelo texto todo.
+fn quote_in_text(quote: &str, text: &str) -> bool {
+    let folded = fold(text);
+    let words: Vec<&str> = folded.split(' ').filter(|w| !w.is_empty()).collect();
+    if words.is_empty() {
+        return false;
+    }
+    let span = (word_count(quote) + 6).min(words.len());
+    words.windows(span).any(|w| quote_in(quote, &w.join(" ")))
+}
+
+/// O entrevistador fez a pergunta do balão? Metade das palavras com mais de 3 letras
+/// da pergunta (e pelo menos 3) aparecem no que ele falou.
+fn spoken_covers(spoken: &str, question: &str) -> bool {
+    let said = content_words(spoken);
+    let asked = content_words(question);
+    let found = asked.iter().filter(|w| said.contains(*w)).count();
+    found >= 3 && found as f32 / asked.len() as f32 >= 0.5
+}
+
+fn content_words(text: &str) -> HashSet<String> {
+    fold(text)
+        .split(' ')
+        .filter(|w| w.chars().count() > 3)
+        .map(String::from)
+        .collect()
 }
 
 fn push_turns(out: &mut String, turns: &[Turn]) {
@@ -774,14 +1059,7 @@ pub fn quote_in(quote: &str, answer_folded: &str) -> bool {
 
 /// Dois cards dizem quase a mesma coisa: 60% das palavras com mais de 3 letras em comum.
 fn similar(a: &str, b: &str) -> bool {
-    let words = |t: &str| -> std::collections::HashSet<String> {
-        fold(t)
-            .split(' ')
-            .filter(|w| w.chars().count() > 3)
-            .map(String::from)
-            .collect()
-    };
-    let (a, b) = (words(a), words(b));
+    let (a, b) = (content_words(a), content_words(b));
     let smaller = a.len().min(b.len());
     smaller > 0 && a.intersection(&b).count() as f32 / smaller as f32 >= 0.6
 }

@@ -31,7 +31,7 @@ import {
 import { Consent } from "./Consent";
 import { average, formatClock, formatMs } from "./format";
 import { History } from "./History";
-import { BlockClock, CardList, CoveragePanel, SuggestionCard, visibleCards } from "./Insights";
+import { Balloons, BlockClock, CardList, CoveragePanel, visibleCards } from "./Insights";
 import { Kits } from "./Kits";
 import { computeMetrics } from "./metrics";
 import { Notes } from "./Notes";
@@ -45,6 +45,7 @@ import {
   type AnalysisEvent,
   type AudioApp,
   type Card as LiveCard,
+  type BalloonSlot,
   type Suggestion,
   type CaptureEvent,
   type CoverageItem,
@@ -133,7 +134,7 @@ function App() {
   const [reconnecting, setReconnecting] = useState<Source | null>(null);
   const [coverage, setCoverage] = useState<CoverageItem[]>([]);
   const [cards, setCards] = useState<LiveCard[]>([]);
-  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
+  const [suggestions, setSuggestions] = useState<Partial<Record<BalloonSlot, Suggestion>>>({});
   const [dismissed, setDismissed] = useState<Set<number>>(new Set());
   const [analysisState, setAnalysisState] = useState<string | null>(null);
   const [marks, setMarks] = useState<Mark[]>([]);
@@ -221,7 +222,8 @@ function App() {
       listen<AnalysisEvent>("analise", ({ payload: e }) => {
         if (e.kind === "coverage") setCoverage(e.items);
         else if (e.kind === "card") setCards((list) => [...list, e.card]);
-        else if (e.kind === "suggestion") setSuggestion(e.suggestion);
+        else if (e.kind === "suggestion") setSuggestions((m) => ({ ...m, [e.suggestion.slot]: e.suggestion }));
+        else if (e.kind === "suggestionUsed") setSuggestions((m) => dropSuggestion(m, e.id));
         else {
           setAnalysisState(e.state);
           if (e.state === "erro") addLog(`Análise: ${e.message}`);
@@ -285,7 +287,7 @@ function App() {
     setReconnecting(null);
     setCoverage([]);
     setCards([]);
-    setSuggestion(null);
+    setSuggestions({});
     setDismissed(new Set());
     setAnalysisState(null);
     setMarks([]);
@@ -574,7 +576,14 @@ function App() {
       )}
 
       {phase === "running" && !!kitId && analyze && (
-        <SuggestionCard suggestion={suggestion} waiting={segments.some((s) => s.source === "sistema")} />
+        <Balloons
+          suggestions={suggestions}
+          waiting={segments.some((s) => s.source === "sistema")}
+          onUse={(s) => {
+            setSuggestions((m) => dropSuggestion(m, s.id));
+            invoke("use_suggestion", { id: s.id }).catch(() => {});
+          }}
+        />
       )}
 
       <CardList cards={shownCards} onDismiss={(id) => setDismissed((d) => new Set(d).add(id))} />
@@ -677,3 +686,8 @@ function App() {
 }
 
 export default App;
+
+/** Tira o balão com esse id (o entrevistador já fez a pergunta). */
+function dropSuggestion(m: Partial<Record<BalloonSlot, Suggestion>>, id: number) {
+  return Object.fromEntries(Object.entries(m).filter(([, s]) => s.id !== id)) as Partial<Record<BalloonSlot, Suggestion>>;
+}

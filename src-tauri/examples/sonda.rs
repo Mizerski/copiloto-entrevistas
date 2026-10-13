@@ -266,10 +266,21 @@ fn main() {
                 AnalysisEvent::Card { card } => {
                     println!("    CARD [{}/{}] {}", card.kind, card.priority, card.text)
                 }
-                AnalysisEvent::Suggestion { suggestion: s } => println!(
-                    "    PERGUNTE [{}] {} ({}; {} ms, fala até {})",
-                    s.kind, s.question, s.why, s.latency_ms, s.t_ms
-                ),
+                AnalysisEvent::Suggestion { suggestion: s } => {
+                    println!(
+                        "    BALÃO {} [{}] {} ({}; {} ms, fala até {})",
+                        s.slot, s.kind, s.question, s.why, s.latency_ms, s.t_ms
+                    );
+                    if let (Some(a), Some(b)) = (&s.earlier, &s.now) {
+                        println!(
+                            "      antes {:?}: {} | agora {:?}: {}",
+                            a.at_ms, a.text, b.at_ms, b.text
+                        );
+                    }
+                }
+                AnalysisEvent::SuggestionUsed { slot, id } => {
+                    println!("    BALÃO {slot} usado (card {id})")
+                }
                 AnalysisEvent::Coverage { items } => {
                     for c in items.iter().filter(|c| !c.evidence.is_empty()) {
                         println!(

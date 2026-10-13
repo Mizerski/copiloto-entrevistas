@@ -330,6 +330,16 @@ async fn set_block(
     Ok(())
 }
 
+/// O entrevistador usou o balão (clicou nele).
+#[tauri::command]
+async fn use_suggestion(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let live = state.live.lock().unwrap();
+    live.as_ref()
+        .ok_or("nenhuma sessão em andamento")?
+        .use_suggestion(id);
+    Ok(())
+}
+
 // Histórico
 
 #[derive(Serialize)]
@@ -650,6 +660,7 @@ pub fn run() {
             mark_moment,
             set_paused,
             set_block,
+            use_suggestion,
             list_sessions,
             session_full,
             delete_session,

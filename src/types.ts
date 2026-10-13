@@ -48,11 +48,27 @@ export type CoverageItem = { competency: string; level: Level; evidence: string;
 
 export type Card = { id: number; tMs: number; kind: string; text: string; priority: string };
 
-export type Suggestion = { id: number; tMs: number; kind: string; question: string; why: string; latencyMs: number };
+export type Quote = { text: string; atMs: number | null };
+
+export type BalloonSlot = "aprofundar" | "checar" | "avancar";
+
+export type Suggestion = {
+  id: number;
+  slot: BalloonSlot;
+  tMs: number;
+  kind: string;
+  question: string;
+  why: string;
+  /** Só em contradição. `atMs` nulo: o trecho é do currículo. */
+  earlier: Quote | null;
+  now: Quote | null;
+  latencyMs: number;
+};
 
 export type AnalysisEvent =
   | { kind: "card"; card: Card }
   | { kind: "suggestion"; suggestion: Suggestion }
+  | { kind: "suggestionUsed"; slot: BalloonSlot; id: number }
   | { kind: "coverage"; items: CoverageItem[] }
   | { kind: "status"; state: string; message: string | null; latencyMs: number | null };
 
@@ -140,6 +156,7 @@ export const CARD_LABEL: Record<string, string> = {
   contradicao: "Contradição",
   nao_tocada: "Não explorada",
   roteiro: "Roteiro",
+  curriculo: "Currículo",
   indutiva: "Pergunta indutiva",
   positivo: "Sinal forte",
   proibida: "Pergunta proibida",

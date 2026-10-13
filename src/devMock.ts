@@ -88,8 +88,14 @@ function playDemo() {
         atMs: 18_000,
       })),
     });
-    emit("analise", { kind: "card", card: { id: 1, tMs: 18_000, kind: "aprofundar", text: "Ele disse \"a gente\": pergunte qual foi a parte dele na migração.", priority: "media" } });
-    emit("analise", { kind: "card", card: { id: 2, tMs: 18_000, kind: "nao_tocada", text: "Comunicação com negócio ainda sem evidência.", priority: "baixa" } });
+    const balloon = (id: number, slot: string, kind: string, question: string, why: string, extra = {}) =>
+      emit("analise", { kind: "suggestion", suggestion: { id, slot, tMs: 18_000, kind, question, why, earlier: null, now: null, latencyMs: 1900, ...extra } });
+    balloon(11, "aprofundar", "aprofundar", "Você falou que a gente usava Kafka. Qual foi exatamente a sua parte nessa migração?", "separar o papel dela do time");
+    balloon(12, "checar", "contradicao", "Me ajuda a entender: no currículo você liderou a migração, e agora contou que entrou na metade. Como foi?", "esclarecer liderança", {
+      earlier: { text: "Liderou a migração de pagamentos para eventos", atMs: null },
+      now: { text: "eu entrei no projeto quando ele já estava na metade", atMs: 16_000 },
+    });
+    balloon(13, "avancar", "nao_tocada", "Como você explicava o andamento da migração pro pessoal de negócio?", "comunicação ainda sem evidência");
     emit("analise", { kind: "status", state: "ok", message: null, latencyMs: 1800 });
   });
   at(8_000, () => emit("analise", { kind: "card", card: { id: 3, tMs: 26_000, kind: "proibida", text: "Pergunta proibida (\"tem filhos\"). Mude de assunto.", priority: "alta" } }));

@@ -32,8 +32,8 @@ body,
 .content {
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-height: 0;
+  /* Cresce com o conteúdo: se não couber, a janela rola em vez de sobrepor. */
+  flex: 1 0 auto;
 }
 
 .grow {
@@ -89,8 +89,7 @@ body,
 /* Sessão ao vivo: a transcrição ocupa a altura que sobra. */
 
 .live {
-  flex: 1;
-  min-height: 0;
+  flex: 1 0 auto;
 }
 
 /* Só a transcrição encolhe; o resto mantém a altura natural. */
@@ -175,25 +174,57 @@ body,
   box-shadow: inset 3px 0 0 var(--green-9), var(--base-card-surface-box-shadow);
 }
 
+.hint-card.blue {
+  box-shadow: inset 3px 0 0 var(--blue-9), var(--base-card-surface-box-shadow);
+}
+
+.hint-card.amber {
+  box-shadow: inset 3px 0 0 var(--amber-9), var(--base-card-surface-box-shadow);
+}
+
 .hint-card.gray {
   box-shadow: inset 3px 0 0 var(--gray-7), var(--base-card-surface-box-shadow);
 }
 
-/* A pergunta sugerida entra com um fade curto, pra notar a troca sem piscar. */
-.suggestion-text {
-  margin: 0;
-  line-height: var(--line-height-4);
-  animation: suggestion-in 0.35s ease-out;
+/* Balões de pergunta. Clicar marca como perguntada; a pergunta nova entra com um fade
+   curto, pra notar a troca sem piscar. */
+.balloon {
+  cursor: pointer;
 }
 
-@keyframes suggestion-in {
+.balloon:hover {
+  background-color: var(--gray-a2);
+}
+
+.balloon:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: 1px;
+}
+
+.balloon.empty {
+  cursor: default;
+  background: transparent;
+}
+
+.balloon-text {
+  margin: 0;
+  line-height: var(--line-height-3);
+  animation: balloon-in 0.35s ease-out;
+}
+
+.contradiction {
+  border-left: 2px solid var(--red-6);
+  padding-left: var(--space-2);
+}
+
+@keyframes balloon-in {
   from {
     opacity: 0;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .suggestion-text {
+  .balloon-text {
     animation: none;
   }
 }

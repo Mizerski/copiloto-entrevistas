@@ -9,6 +9,7 @@ import {
   type Block,
   type Card as LiveCard,
   type CoverageItem,
+  type BalloonSlot,
   type Suggestion,
 } from "./types";
 
@@ -76,37 +77,86 @@ export function CardList({ cards, onDismiss }: { cards: LiveCard[]; onDismiss?: 
   );
 }
 
-/** A próxima pergunta, pronta pra ler. Troca sozinha a cada sugestão nova. */
-export function SuggestionCard({ suggestion, waiting }: { suggestion: Suggestion | null; waiting: boolean }) {
+const SLOTS: { slot: BalloonSlot; label: string; color: "orange" | "red" | "blue" }[] = [
+  { slot: "aprofundar", label: "Aprofundar", color: "orange" },
+  { slot: "checar", label: "Checar", color: "red" },
+  { slot: "avancar", label: "Avançar", color: "blue" },
+];
+
+type BalloonsProps = {
+  suggestions: Partial<Record<BalloonSlot, Suggestion>>;
+  waiting: boolean;
+  onUse: (s: Suggestion) => void;
+};
+
+/** Três balões fixos, cada um com uma função. O que você perguntar (ou clicar) some. */
+export function Balloons({ suggestions, waiting, onUse }: BalloonsProps) {
   return (
-    <Card size="2" className="hint-card suggestion">
-      <Flex align="center" gap="2" mb="1">
-        <Text size="1" weight="medium" color="orange">
-          Pergunte agora
-        </Text>
-        {suggestion && (
-          <Text size="1" color="gray" className="tabular">
-            {CARD_LABEL[suggestion.kind] ?? suggestion.kind} · {formatClock(suggestion.tMs)}
-          </Text>
-        )}
-      </Flex>
-      {suggestion ? (
-        <>
-          <Text as="p" size="4" weight="medium" key={suggestion.id} className="suggestion-text">
-            {suggestion.question}
-          </Text>
-          {suggestion.why && (
-            <Text as="p" size="1" color="gray" mt="1">
-              {suggestion.why}
+    <Flex direction="column" gap="2">
+      {SLOTS.map(({ slot, label, color }) => {
+        const s = suggestions[slot];
+        // Checar só fica vermelho quando é contradição; ponto do currículo é âmbar.
+        const tone = slot === "checar" && s?.kind !== "contradicao" ? "amber" : color;
+        if (!s) {
+          return (
+            <Card key={slot} size="1" className="hint-card gray balloon empty">
+              <Text size="1" weight="medium" color="gray">
+                {label}
+              </Text>
+              <Text size="1" color="gray" ml="2">
+                {waiting ? "ouvindo…" : "aparece quando o candidato responder"}
+              </Text>
+            </Card>
+          );
+        }
+        return (
+          <Card
+            key={slot}
+            size="1"
+            className={`hint-card ${tone} balloon`}
+            role="button"
+            tabIndex={0}
+            title="Marcar como perguntada"
+            onClick={() => onUse(s)}
+            onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onUse(s)}
+          >
+            <Flex align="center" gap="2" mb="1">
+              <Text size="1" weight="medium" color={tone}>
+                {label}
+              </Text>
+              {s.kind !== slot && (
+                <Text size="1" color="gray">
+                  {CARD_LABEL[s.kind] ?? s.kind}
+                </Text>
+              )}
+              <Text size="1" color="gray" className="tabular" ml="auto">
+                {formatClock(s.tMs)}
+              </Text>
+            </Flex>
+            <Text as="p" size="3" weight="medium" key={s.id} className="balloon-text">
+              {s.question}
             </Text>
-          )}
-        </>
-      ) : (
-        <Text as="p" size="2" color="gray">
-          {waiting ? "Ouvindo a resposta…" : "A sugestão aparece enquanto o candidato responde."}
-        </Text>
-      )}
-    </Card>
+            {s.earlier && s.now && (
+              <Flex direction="column" gap="1" mt="2" className="contradiction">
+                <Text size="1" color="gray">
+                  {s.earlier.atMs === null ? "No currículo" : `Aos ${formatClock(s.earlier.atMs)}`}:{" "}
+                  <span className="quote">“{s.earlier.text}”</span>
+                </Text>
+                <Text size="1" color="gray">
+                  Agora{s.now.atMs !== null ? ` (${formatClock(s.now.atMs)})` : ""}:{" "}
+                  <span className="quote">“{s.now.text}”</span>
+                </Text>
+              </Flex>
+            )}
+            {s.why && !s.earlier && (
+              <Text as="p" size="1" color="gray" mt="1">
+                {s.why}
+              </Text>
+            )}
+          </Card>
+        );
+      })}
+    </Flex>
   );
 }
 

@@ -215,6 +215,12 @@ impl LiveSession {
         Ok(())
     }
 
+    pub fn use_suggestion(&self, id: i64) {
+        if let Some(a) = &self.analyzer {
+            a.use_suggestion(id);
+        }
+    }
+
     pub fn set_block(&self, name: String, minutes: Option<u32>) {
         if let Some(a) = &self.analyzer {
             a.set_block(name, minutes, self.elapsed_ms());
