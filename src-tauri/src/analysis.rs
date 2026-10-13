@@ -202,15 +202,15 @@ impl Analyzer {
         if segment.echo {
             return;
         }
-        if segment.source == Source::Mic {
-            if let Some(phrase) = self.kit.forbidden_in(&segment.text) {
-                self.card(
-                    segment.end_ms,
-                    "proibida",
-                    &format!("Pergunta proibida (\"{phrase}\"). Mude de assunto."),
-                    "alta",
-                );
-            }
+        if segment.source == Source::Mic
+            && let Some(phrase) = self.kit.forbidden_in(&segment.text)
+        {
+            self.card(
+                segment.end_ms,
+                "proibida",
+                &format!("Pergunta proibida (\"{phrase}\"). Mude de assunto."),
+                "alta",
+            );
         }
         let close = {
             let mut st = self.state.lock().unwrap();
@@ -343,13 +343,12 @@ impl Analyzer {
                     .coverage
                     .iter_mut()
                     .find(|c| fold(&c.competency) == fold(name))
+                    && level > c.level
                 {
-                    if level > c.level {
-                        c.level = level;
-                        c.evidence = evidence.to_string();
-                        c.at_ms = answer_end;
-                        changed = true;
-                    }
+                    c.level = level;
+                    c.evidence = evidence.to_string();
+                    c.at_ms = answer_end;
+                    changed = true;
                 }
             }
             if let Some(summary) = value["resumo"].as_str().filter(|s| !s.trim().is_empty()) {

@@ -228,7 +228,7 @@ fn main() {
                     println!("    CARD [{}/{}] {}", card.kind, card.priority, card.text)
                 }
                 AnalysisEvent::Coverage { items } => {
-                    for c in items.iter().filter(|c| c.evidence.len() > 0) {
+                    for c in items.iter().filter(|c| !c.evidence.is_empty()) {
                         println!(
                             "    COBERTURA {}: {:?} \"{}\"",
                             c.competency, c.level, c.evidence

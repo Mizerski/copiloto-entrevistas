@@ -15,7 +15,7 @@ const PROVIDER_LABEL: Record<Provider, string> = {
 
 type SlotName = keyof typeof SLOT_LABEL;
 
-function KeyField(props: {
+export function KeyField(props: {
   label: string;
   mask: string | null;
   onSave: (key: string) => Promise<void>;

@@ -6,8 +6,10 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { average, formatClock, formatMs } from "./format";
 import { History } from "./History";
 import { BlockClock, CardList, CoveragePanel, visibleCards } from "./Insights";
+import { Consent } from "./Consent";
 import { Kits } from "./Kits";
 import { Notes } from "./Notes";
+import { Onboarding } from "./Onboarding";
 import { computeMetrics } from "./metrics";
 import { Settings } from "./Settings";
 import { insertSegment, Transcript } from "./Transcript";
@@ -21,6 +23,7 @@ import {
   type CoverageItem,
   type Kit,
   type KitRow,
+  type LlmSettings,
   type Mark,
   type Microphone,
   type Segment,
@@ -74,6 +77,9 @@ function App() {
   const [keyterms, setKeyterms] = useState("");
   const [saveWav, setSaveWav] = useState(false);
   const [deepgramReady, setDeepgramReady] = useState(false);
+  const [llm, setLlm] = useState<LlmSettings | null>(null);
+  const [consent, setConsent] = useState(false);
+  const [onboarded, setOnboarded] = useState<boolean | null>(null);
 
   // Sessão
   const [startedAt, setStartedAt] = useState(0);
@@ -124,6 +130,7 @@ function App() {
     try {
       setKits(await invoke<KitRow[]>("list_kits"));
       setDeepgramReady((await invoke<string | null>("deepgram_key_status")) !== null);
+      setLlm(await invoke<LlmSettings>("llm_settings"));
     } catch (e) {
       addLog(`Erro ao carregar: ${e}`);
     }
@@ -132,6 +139,9 @@ function App() {
   useEffect(() => {
     refreshDevices();
     refreshSetup();
+    invoke<boolean>("get_flag", { key: "onboarded" })
+      .then(setOnboarded)
+      .catch(() => setOnboarded(true));
 
     const addMark = (tMs: number, kind: Mark["kind"] = "mark") =>
       setMarks((list) => [...list, { id: -Date.now(), tMs, kind, note: null }]);
@@ -271,6 +281,8 @@ function App() {
       setStartedAt(t0);
       setKit(started.kit);
       setPhase("running");
+      setConsent(false);
+      getCurrentWindow().setTitle("● Gravando · Copiloto").catch(() => {});
       started.warnings.forEach((w) => addLog(w));
       if (started.wavDir) addLog(`WAVs de debug em ${started.wavDir}`);
       if (started.kit?.blocks.length) await chooseBlock(0, started.kit.blocks);
@@ -282,6 +294,7 @@ function App() {
   async function stop() {
     setPhase("stopping");
     await invoke("stop_session");
+    getCurrentWindow().setTitle("Copiloto").catch(() => {});
     lastLevel.current = { mic: 0, sistema: 0 };
     setPartials(EMPTY_TEXT);
     setReconnecting(null);
@@ -330,6 +343,17 @@ function App() {
   }
 
   const live = phase !== "setup";
+
+  const providerName = (p: string) => (p === "anthropic" ? "Anthropic" : "o provedor compatível com OpenAI configurado");
+  const destinations = [
+    deepgramReady
+      ? "O áudio das duas pontas vai pra Deepgram, pra ser transcrito. Não é gravado."
+      : "Sem chave da Deepgram: nada é transcrito.",
+    ...(kitId && analyze && llm
+      ? [`O texto da conversa vai pra ${providerName(llm.live.provider)} durante a sessão (${llm.live.model}).`]
+      : []),
+    "Transcrição, cobertura e notas ficam só neste computador.",
+  ];
 
   const setupView = (
     <>
@@ -428,7 +452,9 @@ function App() {
         </label>
       </section>
 
-      <button className="primary" onClick={start}>
+      <Consent checked={consent} onChange={setConsent} destinations={destinations} />
+
+      <button className="primary" disabled={!consent} onClick={start}>
         Iniciar sessão
       </button>
     </>
@@ -543,6 +569,20 @@ function App() {
       </div>
     </>
   );
+
+  if (onboarded === false) {
+    return (
+      <main>
+        <Onboarding
+          onDone={() => {
+            setOnboarded(true);
+            refreshSetup();
+            refreshDevices();
+          }}
+        />
+      </main>
+    );
+  }
 
   return (
     <main>

@@ -691,3 +691,69 @@ ul.plain {
     padding: 0;
   }
 }
+
+/* Consentimento e primeiro uso */
+
+.quote-box {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--line);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.consent details summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--accent);
+}
+
+.ok-text {
+  margin: 0;
+  color: var(--meter);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.onboarding {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.onboarding p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.steps {
+  display: flex;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.steps li {
+  flex: 1;
+  padding-top: 6px;
+  border-top: 3px solid var(--line);
+}
+
+.steps li.done {
+  border-top-color: var(--meter);
+}
+
+.steps li.active {
+  border-top-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.bar.big {
+  height: 12px;
+  border-radius: 6px;
+}

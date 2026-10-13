@@ -10,13 +10,16 @@ pub mod secrets;
 pub mod session;
 
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use serde::Serialize;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 use analysis::Candidate;
-use audio::{AudioApp, Input, Microphone};
+use audio::{AudioApp, Capture, CaptureConfig, Input, Microphone};
 use db::{Card, Db, KitRow, Mark, NewSession, Segment, SessionDetail, SessionSummary, UsageTotals};
 use deepgram::DeepgramConfig;
 use kit::Kit;
@@ -25,13 +28,29 @@ use llm::{LlmClient, Provider, Slot, Usage};
 
 const DEEPGRAM: &str = "deepgram";
 
+const TRAY_ID: &str = "principal";
+
 struct AppState {
     db: Arc<Db>,
     live: Mutex<Option<LiveSession>>,
+    /// Teste de microfone do primeiro uso: só captura e mostra o nível.
+    mic_test: Mutex<Option<Capture>>,
 }
 
 fn mark_shortcut() -> Shortcut {
     Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyM)
+}
+
+/// O ícone da bandeja mostra quando o app está ouvindo.
+fn set_recording(app: &AppHandle, recording: bool) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let tip = if recording {
+            "Copiloto · gravando a entrevista"
+        } else {
+            "Copiloto"
+        };
+        let _ = tray.set_tooltip(Some(tip));
+    }
 }
 
 // Os comandos são `async` pra rodarem fora da thread principal: a captura usa COM em
@@ -213,6 +232,7 @@ async fn start_session(
     }
     let session_id = live.session.id;
     *state.live.lock().unwrap() = Some(live);
+    set_recording(&app, true);
     Ok(Started {
         session_id,
         wav_dir: wav_dir.map(|d| d.display().to_string()),
@@ -223,12 +243,62 @@ async fn start_session(
 
 /// Para a sessão. Volta depois que as últimas falas foram gravadas.
 #[tauri::command]
-async fn stop_session(state: State<'_, AppState>) -> Result<(), String> {
+async fn stop_session(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let live = state.live.lock().unwrap().take();
     if let Some(live) = live {
         live.stop().await;
     }
+    set_recording(&app, false);
     Ok(())
+}
+
+/// Liga ou desliga o teste de microfone (só nível, nada sai do computador).
+#[tauri::command]
+async fn mic_test(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mic_id: Option<String>,
+    on: bool,
+) -> Result<(), String> {
+    let previous = state.mic_test.lock().unwrap().take();
+    if let Some(previous) = previous {
+        previous.stop();
+    }
+    if on {
+        let capture = Capture::start(
+            CaptureConfig {
+                mic: Some(Input::Microphone(mic_id)),
+                sistema: None,
+                wav_dir: None,
+                started_at: Instant::now(),
+            },
+            move |event| {
+                let _ = app.emit("captura", event);
+            },
+            |_| {},
+        )?;
+        *state.mic_test.lock().unwrap() = Some(capture);
+    }
+    Ok(())
+}
+
+/// Preferências simples guardadas no banco (ex.: se o primeiro uso já foi feito).
+const FLAGS: &[&str] = &["onboarded"];
+
+#[tauri::command]
+async fn get_flag(state: State<'_, AppState>, key: String) -> Result<bool, String> {
+    if !FLAGS.contains(&key.as_str()) {
+        return Err(format!("preferência desconhecida: {key}"));
+    }
+    Ok(state.db.get_setting(&key)?.as_deref() == Some("1"))
+}
+
+#[tauri::command]
+async fn set_flag(state: State<'_, AppState>, key: String, value: bool) -> Result<(), String> {
+    if !FLAGS.contains(&key.as_str()) {
+        return Err(format!("preferência desconhecida: {key}"));
+    }
+    state.db.set_setting(&key, if value { "1" } else { "0" })
 }
 
 /// Marca o momento atual da sessão. Devolve o instante marcado.
@@ -533,19 +603,40 @@ pub fn run() {
             if let Some(days) = db
                 .get_setting(RETENTION_KEY)?
                 .and_then(|v| v.parse::<i64>().ok())
+                && days > 0
             {
-                if days > 0 {
-                    db.purge_old_transcripts(days)?;
-                }
+                db.purge_old_transcripts(days)?;
             }
             app.manage(AppState {
                 db: Arc::new(db),
                 live: Mutex::new(None),
+                mic_test: Mutex::new(None),
             });
             // Outro app pode já ter o atalho; o botão na tela continua funcionando.
             if let Err(e) = app.global_shortcut().register(mark_shortcut()) {
                 eprintln!("atalho Ctrl+Shift+M indisponível: {e}");
             }
+
+            let show = MenuItem::with_id(app, "mostrar", "Mostrar o Copiloto", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "sair", "Sair", true, None::<&str>)?;
+            let mut tray = TrayIconBuilder::with_id(TRAY_ID)
+                .tooltip("Copiloto")
+                .menu(&Menu::with_items(app, &[&show, &quit])?)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "mostrar" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.unminimize();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "sair" => app.exit(0),
+                    _ => {}
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.build(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -553,6 +644,9 @@ pub fn run() {
             list_audio_apps,
             start_session,
             stop_session,
+            mic_test,
+            get_flag,
+            set_flag,
             mark_moment,
             set_paused,
             set_block,

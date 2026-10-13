@@ -47,6 +47,7 @@ const script: [number, "mic" | "sistema", string][] = [
 ];
 
 let timers: number[] = [];
+let onboarded = false;
 let segmentId = 1;
 
 function seg(startMs: number, source: "mic" | "sistema", text: string): Segment {
@@ -205,6 +206,11 @@ export function installDevMock() {
         }
         case "save_notes":
           fullSession.detail.notesJson = JSON.stringify(a.notes);
+          return null;
+        case "get_flag":
+          return onboarded;
+        case "set_flag":
+          onboarded = Boolean(a.value);
           return null;
         case "retention_days":
           return 30;
