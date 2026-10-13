@@ -142,17 +142,21 @@ impl Capture {
             .into_iter()
             .filter_map(|(source, input)| Some((source, input?)));
 
+        // Arquivos de replay carregam primeiro e só começam a tocar juntos, depois que
+        // todas as fontes abriram; senão um começa segundos antes do outro.
+        let go = StartSignal::default();
         let mut opened = 0;
         for (source, target) in targets {
             let (ready_tx, ready_rx) = mpsc::channel();
             let stop = stop.clone();
+            let go = go.clone();
             let chunk_tx = chunk_tx.clone();
             let event_tx = event_tx.clone();
             let handle = thread::Builder::new()
                 .name(format!("captura-{}", source.label()))
                 .spawn(move || match target {
                     Input::File(path) => {
-                        file_thread(source, path, started_at, stop, chunk_tx, ready_tx)
+                        file_thread(source, path, started_at, stop, go, chunk_tx, ready_tx)
                     }
                     target => capture_thread(
                         source, target, started_at, stop, chunk_tx, event_tx, ready_tx,
@@ -177,6 +181,7 @@ impl Capture {
 
         if opened == 0 {
             stop.store(true, Ordering::Relaxed);
+            go.fire();
             for t in threads {
                 let _ = t.join();
             }
@@ -190,6 +195,7 @@ impl Capture {
                 .spawn(move || process_thread(chunk_rx, event_rx, wav_dir, on_event, on_audio))
                 .map_err(|e| e.to_string())?,
         );
+        go.fire();
 
         Ok(Capture { stop, threads })
     }
@@ -339,6 +345,24 @@ fn open_client(target: &Input) -> Result<(AudioClient, WaveFormat), String> {
     Err(format!("nenhum formato aceito: {last_error}"))
 }
 
+/// Sinal único de largada, esperado pelas fontes de arquivo.
+#[derive(Clone, Default)]
+struct StartSignal(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+
+impl StartSignal {
+    fn fire(&self) {
+        *self.0.0.lock().unwrap() = true;
+        self.0.1.notify_all();
+    }
+
+    fn wait(&self) {
+        let mut fired = self.0.0.lock().unwrap();
+        while !*fired {
+            fired = self.0.1.wait(fired).unwrap();
+        }
+    }
+}
+
 /// Toca um WAV em tempo real, em blocos de 20 ms, carimbando cada bloco no relógio da
 /// sessão como se tivesse acabado de ser capturado.
 fn file_thread(
@@ -346,6 +370,7 @@ fn file_thread(
     path: PathBuf,
     started_at: Instant,
     stop: Arc<AtomicBool>,
+    go: StartSignal,
     chunk_tx: mpsc::Sender<AudioChunk>,
     ready_tx: mpsc::Sender<Result<String, String>>,
 ) {
@@ -363,6 +388,7 @@ fn file_thread(
     let seconds = samples.len() as f32 / SAMPLE_RATE as f32;
     let _ = ready_tx.send(Ok(format!("arquivo {name}, {seconds:.1} s")));
 
+    go.wait();
     const BLOCK: usize = SAMPLE_RATE as usize / 50;
     let begin = Instant::now();
     for (i, block) in samples.chunks(BLOCK).enumerate() {
