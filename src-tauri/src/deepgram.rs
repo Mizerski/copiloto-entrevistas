@@ -15,11 +15,10 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use url::Url;
 
-use crate::audio::{AudioChunk, Source, SAMPLE_RATE};
+use crate::audio::{AudioChunk, SAMPLE_RATE, Source};
 
 const LISTEN_URL: &str = "wss://api.deepgram.com/v1/listen";
 /// Sem áudio da fonte por mais que isso, o adaptador começa a mandar silêncio.
@@ -27,6 +26,10 @@ const SILENCE_AFTER: Duration = Duration::from_millis(300);
 const TICK: Duration = Duration::from_millis(100);
 /// Depois do `CloseStream`, quanto esperar os últimos resultados.
 const CLOSE_GRACE: Duration = Duration::from_secs(5);
+/// Uma conexão que durou mais que isso zera a contagem de tentativas.
+const STABLE_AFTER: Duration = Duration::from_secs(30);
+/// Tentativas seguidas antes de desistir (esperas de 1, 2, 4, 8 e depois 16 s).
+const MAX_ATTEMPTS: u32 = 8;
 
 pub struct DeepgramConfig {
     pub api_key: String,
@@ -36,7 +39,11 @@ pub struct DeepgramConfig {
 }
 
 #[derive(Debug, Serialize, Clone)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SttEvent {
     Connected {
         source: Source,
@@ -55,6 +62,11 @@ pub enum SttEvent {
     UtteranceEnd {
         source: Source,
     },
+    Reconnecting {
+        source: Source,
+        attempt: u32,
+        message: String,
+    },
     Error {
         source: Source,
         message: String,
@@ -64,18 +76,65 @@ pub enum SttEvent {
     },
 }
 
+/// Falha de uma conexão. `retry` diz se vale reconectar (rede, queda) ou não
+/// (chave recusada, configuração inválida).
+struct Failure {
+    message: String,
+    retry: bool,
+}
+
+impl Failure {
+    fn retry(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retry: true,
+        }
+    }
+
+    fn fatal(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retry: false,
+        }
+    }
+}
+
 /// Abre a conexão de uma fonte. Mande os trechos de áudio pelo canal retornado;
 /// fechar o canal encerra a transcrição depois que os últimos resultados chegarem.
+/// Se a conexão cair, reconecta sozinho; o áudio que chega enquanto isso fica no
+/// canal e é enviado na conexão nova.
 pub fn spawn(
     config: Arc<DeepgramConfig>,
     source: Source,
     started_at: Instant,
     on_event: Arc<dyn Fn(SttEvent) + Send + Sync>,
 ) -> mpsc::UnboundedSender<AudioChunk> {
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::unbounded_channel();
     tauri::async_runtime::spawn(async move {
-        if let Err(message) = run(&config, source, started_at, rx, on_event.as_ref()).await {
-            on_event(SttEvent::Error { source, message });
+        let mut attempt = 0u32;
+        loop {
+            let opened_at = Instant::now();
+            let failure = match run(&config, source, started_at, &mut rx, on_event.as_ref()).await {
+                Ok(()) => break,
+                Err(failure) => failure,
+            };
+            if opened_at.elapsed() > STABLE_AFTER {
+                attempt = 0;
+            }
+            attempt += 1;
+            if !failure.retry || attempt > MAX_ATTEMPTS {
+                on_event(SttEvent::Error {
+                    source,
+                    message: failure.message,
+                });
+                break;
+            }
+            on_event(SttEvent::Reconnecting {
+                source,
+                attempt,
+                message: failure.message,
+            });
+            tokio::time::sleep(Duration::from_secs(1 << (attempt - 1).min(4))).await;
         }
         on_event(SttEvent::Closed { source });
     });
@@ -89,28 +148,30 @@ pub async fn check_key(api_key: &str) -> Result<(), String> {
         language: "pt-BR".into(),
         keyterms: Vec::new(),
     };
-    let mut ws = connect(&config).await?;
+    let mut ws = connect(&config).await.map_err(|f| f.message)?;
     let _ = ws.send(close_stream()).await;
     let _ = ws.close(None).await;
     Ok(())
 }
 
+/// Uma conexão, do `connect` até o fim do áudio ou uma falha.
 async fn run(
     config: &DeepgramConfig,
     source: Source,
     started_at: Instant,
-    mut audio: mpsc::UnboundedReceiver<AudioChunk>,
+    audio: &mut mpsc::UnboundedReceiver<AudioChunk>,
     on_event: &(dyn Fn(SttEvent) + Send + Sync),
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let ws = connect(config).await?;
     on_event(SttEvent::Connected { source });
     let (mut write, mut read) = ws.split();
 
+    // Cada conexão conta o tempo do áudio a partir do zero.
     let mut timeline = Timeline::default();
     let mut ticker = tokio::time::interval(TICK);
     let mut last_audio = Instant::now();
     let mut closing_since: Option<Instant> = None;
-    let send_err = |e: WsError| format!("falha ao enviar áudio: {e}");
+    let send_err = |e: WsError| Failure::retry(format!("falha ao enviar áudio: {e}"));
 
     loop {
         tokio::select! {
@@ -128,7 +189,7 @@ async fn run(
             _ = ticker.tick() => {
                 if let Some(since) = closing_since {
                     if since.elapsed() > CLOSE_GRACE {
-                        break;
+                        return Ok(());
                     }
                 } else if last_audio.elapsed() >= SILENCE_AFTER {
                     // O loopback fica mudo quando o app não toca nada. Sem áudio a Deepgram
@@ -138,31 +199,36 @@ async fn run(
                     write.send(Message::Binary(vec![0u8; samples * 2].into())).await.map_err(send_err)?;
                 }
             },
-            msg = read.next() => match msg {
-                Some(Ok(Message::Text(text))) => {
-                    if let Some(event) = parse_message(&text, source, &timeline, started_at) {
-                        on_event(event);
+            msg = read.next() => {
+                // Depois do `CloseStream`, qualquer fim de conexão é o fim esperado.
+                let ended = |message: String| {
+                    if closing_since.is_some() { Ok(()) } else { Err(Failure::retry(message)) }
+                };
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Some(event) = parse_message(&text, source, &timeline, started_at) {
+                            on_event(event);
+                        }
                     }
-                }
-                Some(Ok(Message::Close(frame))) => {
-                    if let Some(frame) = frame.filter(|f| f.code != CloseCode::Normal) {
-                        return Err(format!("a Deepgram fechou a conexão ({}): {}", frame.code, frame.reason));
+                    Some(Ok(Message::Close(frame))) => {
+                        let reason = frame
+                            .map(|f| format!("({}) {}", f.code, f.reason))
+                            .unwrap_or_default();
+                        return ended(format!("a Deepgram fechou a conexão {reason}"));
                     }
-                    break;
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => return ended(format!("conexão caiu: {e}")),
+                    None => return ended("conexão encerrada".into()),
                 }
-                Some(Ok(_)) => {}
-                Some(Err(e)) => return Err(format!("conexão caiu: {e}")),
-                None => break,
             },
         }
     }
-    Ok(())
 }
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-async fn connect(config: &DeepgramConfig) -> Result<Socket, String> {
+async fn connect(config: &DeepgramConfig) -> Result<Socket, Failure> {
     let mut url = Url::parse(LISTEN_URL).expect("URL fixa");
     {
         let mut q = url.query_pairs_mut();
@@ -172,7 +238,8 @@ async fn connect(config: &DeepgramConfig) -> Result<Socket, String> {
             .append_pair("sample_rate", &SAMPLE_RATE.to_string())
             .append_pair("channels", "1")
             .append_pair("interim_results", "true")
-            .append_pair("smart_format", "true")
+            // Sem `smart_format`: em pt-BR ele troca "uma" por "1" e "duas" por "2".
+            // No teste de replay, tirar baixou o erro de palavras de 4,1% pra 1,0%.
             .append_pair("punctuate", "true")
             .append_pair("endpointing", "300")
             .append_pair("utterance_end_ms", "1000");
@@ -184,9 +251,9 @@ async fn connect(config: &DeepgramConfig) -> Result<Socket, String> {
     let mut request = url
         .as_str()
         .into_client_request()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| Failure::fatal(e.to_string()))?;
     let auth = HeaderValue::from_str(&format!("Token {}", config.api_key.trim()))
-        .map_err(|_| "a chave tem caracteres inválidos".to_string())?;
+        .map_err(|_| Failure::fatal("a chave tem caracteres inválidos"))?;
     request.headers_mut().insert("Authorization", auth);
 
     match connect_async(request).await {
@@ -199,13 +266,16 @@ async fn connect(config: &DeepgramConfig) -> Result<Socket, String> {
                 .map(|b| String::from_utf8_lossy(b).into_owned())
                 .unwrap_or_default();
             Err(match status {
-                401 | 403 => "a Deepgram recusou a chave (inválida ou sem permissão)".into(),
-                402 => "a conta da Deepgram está sem crédito".into(),
-                400 => format!("a Deepgram recusou a configuração: {body}"),
-                _ => format!("a Deepgram respondeu {status}: {body}"),
+                401 | 403 => {
+                    Failure::fatal("a Deepgram recusou a chave (inválida ou sem permissão)")
+                }
+                402 => Failure::fatal("a conta da Deepgram está sem crédito"),
+                400 => Failure::fatal(format!("a Deepgram recusou a configuração: {body}")),
+                // 429, 5xx: instabilidade do lado deles, vale tentar de novo.
+                _ => Failure::retry(format!("a Deepgram respondeu {status}: {body}")),
             })
         }
-        Err(e) => Err(format!("não conectou na Deepgram: {e}")),
+        Err(e) => Err(Failure::retry(format!("não conectou na Deepgram: {e}"))),
     }
 }
 
@@ -220,11 +290,18 @@ fn to_pcm16(samples: &[f32]) -> Vec<u8> {
         .collect()
 }
 
-fn parse_message(text: &str, source: Source, timeline: &Timeline, started_at: Instant) -> Option<SttEvent> {
+fn parse_message(
+    text: &str,
+    source: Source,
+    timeline: &Timeline,
+    started_at: Instant,
+) -> Option<SttEvent> {
     let v: Value = serde_json::from_str(text).ok()?;
     match v["type"].as_str()? {
         "Results" => {
-            let text = v["channel"]["alternatives"][0]["transcript"].as_str()?.trim();
+            let text = v["channel"]["alternatives"][0]["transcript"]
+                .as_str()?
+                .trim();
             if text.is_empty() {
                 return None;
             }

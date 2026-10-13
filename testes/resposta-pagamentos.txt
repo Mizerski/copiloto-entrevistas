@@ -1,0 +1,5 @@
+No meu último projeto eu fui responsável pela migração do processamento de pagamentos para uma arquitetura orientada a eventos.
+
+A gente usava Kafka para publicar os eventos de transação, e cada consumidor precisava ser idempotente, porque o mesmo evento podia chegar duas vezes. Eu propus guardar a chave de idempotência no Postgres com uma restrição de unicidade.
+
+Depois da migração, a confirmação do Pix ficou bem mais rápida e os incidentes de pagamento duplicado praticamente sumiram. O que eu faria diferente hoje é ter colocado observabilidade desde o começo, porque passamos semanas sem saber onde estava a latência.

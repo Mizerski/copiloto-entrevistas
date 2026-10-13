@@ -15,7 +15,9 @@ fn entry(provider: &str) -> Result<Entry, String> {
 }
 
 pub fn save(provider: &str, key: &str) -> Result<(), String> {
-    entry(provider)?.set_password(key.trim()).map_err(|e| e.to_string())
+    entry(provider)?
+        .set_password(key.trim())
+        .map_err(|e| e.to_string())
 }
 
 pub fn load(provider: &str) -> Result<Option<String>, String> {
@@ -35,6 +37,13 @@ pub fn delete(provider: &str) -> Result<(), String> {
 
 /// `••••a1b2`: o suficiente pra reconhecer qual chave está salva.
 pub fn mask(key: &str) -> String {
-    let tail: String = key.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    let tail: String = key
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     format!("••••{tail}")
 }

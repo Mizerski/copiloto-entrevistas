@@ -9,6 +9,7 @@
     "core:default",
     "opener:default",
     "core:window:allow-set-always-on-top",
-    "core:window:allow-set-content-protected"
+    "core:window:allow-set-content-protected",
+    "dialog:default"
   ]
 }
