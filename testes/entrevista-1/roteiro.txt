@@ -1,0 +1,13 @@
+E: Oi, tudo bem? Pra começar, me conta rapidamente a sua trajetória.
+C: Sou desenvolvedora backend há sete anos, sempre com Java e Kotlin. Nos últimos dois anos trabalhei no time de pagamentos de uma fintech.
+E: Me conta sobre um projeto difícil em que você trabalhou recentemente.
+C: No meu último projeto eu fui responsável pela migração do processamento de pagamentos para uma arquitetura orientada a eventos. A gente usava Kafka para publicar os eventos de transação, e cada consumidor precisava ser idempotente, porque o mesmo evento podia chegar duas vezes. Eu propus guardar a chave de idempotência no Postgres com uma restrição de unicidade. Depois da migração, a confirmação do Pix ficou bem mais rápida e os incidentes de pagamento duplicado praticamente sumiram.
+E: Você foi a líder técnica dessa migração, certo?
+C: É, na verdade quem liderou foi o meu gestor. Eu entrei no projeto quando ele já estava na metade e fiquei responsável pelos consumidores de conciliação.
+E: Entendi. E como vocês sabiam que o sistema estava saudável em produção?
+C: A gente tinha uns dashboards. Quando dava problema, o pessoal avisava no canal e a gente olhava.
+E: Conta de uma vez em que você discordou de uma decisão técnica.
+C: Teve uma vez que o time queria usar uma fila em memória para os eventos de estorno. Eu escrevi um documento mostrando que a gente perderia eventos se o serviço reiniciasse, com um teste que reproduzia o problema. Levei para a reunião de arquitetura e a decisão mudou para usar o Kafka também nesse fluxo. No trimestre seguinte, não perdemos nenhum estorno.
+E: Legal. E você tem filhos?
+E: Desculpa, essa pergunta não precisava. Vamos seguir. O que você gostaria de saber sobre o time?
+C: Queria entender como funciona o plantão e como vocês dividem o trabalho entre pagamentos e conciliação.

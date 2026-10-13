@@ -33,10 +33,12 @@ Você recebe o kit da entrevista, o currículo do candidato e as trocas recentes
 resposta que justifica. Sem trecho, não inclua a competência.
 2. cards: no máximo 2 sugestões curtas (até 15 palavras), no imperativo, pro entrevistador \
 usar agora. Tipos: aprofundar (algo vago ou dito no plural sem dizer a parte da pessoa), \
-vaga (resposta sem resultado ou exemplo concreto), contradicao (com o currículo ou com algo \
-dito antes), nao_tocada (competência importante ainda sem evidência, considerando o tempo e o \
+vaga (resposta sem resultado ou exemplo concreto), contradicao (a resposta contradiz o \
+currículo ou algo dito antes; um ponto do currículo ainda não verificado é aprofundar, não \
+contradicao), nao_tocada (competência importante ainda sem evidência, considerando o tempo e o \
 roteiro), indutiva (a pergunta sugeria a resposta ou era fechada demais), positivo (evidência \
-forte que vale registrar; use pouco). Se não houver nada útil, devolva cards vazio.
+forte que vale registrar; use pouco). Não repita uma sugestão que já está na lista de cards \
+mostrados, nem com outras palavras. Se não houver nada novo e útil, devolva cards vazio.
 3. resumo: o resumo atualizado da conversa inteira até agora, em até 100 palavras.
 
 Regras:
@@ -124,7 +126,12 @@ struct State {
     coverage: Vec<CoverageItem>,
     summary: String,
     block: Option<CurrentBlock>,
+    /// Textos dos últimos cards mostrados, pra não repetir.
+    shown_cards: Vec<String>,
 }
+
+/// Quantos cards recentes entram no prompt e na checagem de repetição.
+const RECENT_CARDS: usize = 8;
 
 pub struct Analyzer {
     session_id: i64,
@@ -179,6 +186,7 @@ impl Analyzer {
                 coverage,
                 summary: String::new(),
                 block: None,
+                shown_cards: Vec::new(),
             }),
             generation: AtomicU64::new(0),
             emit,
@@ -384,6 +392,16 @@ impl Analyzer {
     }
 
     fn card(&self, t_ms: u64, kind: &str, text: &str, priority: &str) {
+        {
+            let mut st = self.state.lock().unwrap();
+            // O modelo às vezes repete a mesma sugestão com outras palavras.
+            if kind != "proibida" && st.shown_cards.iter().any(|c| similar(c, text)) {
+                return;
+            }
+            st.shown_cards.push(text.to_string());
+            let excess = st.shown_cards.len().saturating_sub(RECENT_CARDS);
+            st.shown_cards.drain(..excess);
+        }
         let id = self
             .db
             .insert_card(self.session_id, t_ms, kind, text, priority)
@@ -433,6 +451,12 @@ impl Analyzer {
         }
         if !st.summary.is_empty() {
             out.push_str(&format!("\nResumo da conversa até aqui:\n{}\n", st.summary));
+        }
+        if !st.shown_cards.is_empty() {
+            out.push_str("\nCards já mostrados ao entrevistador (não repita):\n");
+            for c in &st.shown_cards {
+                out.push_str(&format!("- {c}\n"));
+            }
         }
         out.push_str("\nTrocas recentes (analise a última resposta):\n");
         for turn in &st.turns[index.saturating_sub(CONTEXT_TURNS)..=index] {
@@ -526,6 +550,20 @@ pub fn quote_in(quote: &str, answer_folded: &str) -> bool {
     let words: Vec<&str> = quote.split(' ').collect();
     let found = words.iter().filter(|w| answer.contains_key(*w)).count();
     found as f32 / words.len() as f32 >= 0.8
+}
+
+/// Dois cards dizem quase a mesma coisa: 60% das palavras com mais de 3 letras em comum.
+fn similar(a: &str, b: &str) -> bool {
+    let words = |t: &str| -> std::collections::HashSet<String> {
+        fold(t)
+            .split(' ')
+            .filter(|w| w.chars().count() > 3)
+            .map(String::from)
+            .collect()
+    };
+    let (a, b) = (words(a), words(b));
+    let smaller = a.len().min(b.len());
+    smaller > 0 && a.intersection(&b).count() as f32 / smaller as f32 >= 0.6
 }
 
 fn clock(ms: u64) -> String {

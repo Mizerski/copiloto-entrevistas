@@ -1,0 +1,3 @@
+Ana Souza. Desenvolvedora backend, 7 anos de experiência com Java e Kotlin.
+2022-2024: Fintech XYZ, time de pagamentos. Liderou a migração do processamento de pagamentos para arquitetura orientada a eventos (Kafka). Reduziu o tempo de confirmação do Pix em 60%.
+2017-2022: Consultoria, sistemas bancários em Java.

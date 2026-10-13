@@ -14,7 +14,12 @@
 //!     --kit X.md             kit da entrevista (liga cobertura e perguntas proibidas)
 //!     --llm-url URL          LLM compatível com OpenAI pra análise (ex.: o `llm_falso`)
 //!     --llm-modelo M         modelo dessa LLM (chave opcional em LLM_API_KEY)
-//!     --notas                gera as notas pós-entrevista no fim (precisa de --llm-url)
+//!     --notas                gera as notas pós-entrevista no fim (precisa de LLM)
+//!     --anthropic            LLM = Claude com a configuração padrão do app e a chave salva
+//!                            pelo app (--llm-modelo troca o modelo)
+//!     --candidato NOME       nome do candidato
+//!     --cv X.txt             currículo do candidato
+//!     --pontos "texto"       pontos a checar
 //!
 //! A chave da Deepgram vem de DEEPGRAM_API_KEY ou, se não definida, do Credential
 //! Manager (a mesma que o app salva). A sessão vai pra um banco em memória.
@@ -51,6 +56,10 @@ struct Args {
     llm_url: Option<String>,
     llm_model: Option<String>,
     notes: bool,
+    anthropic: bool,
+    candidate: Option<String>,
+    resume: Option<PathBuf>,
+    checkpoints: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -77,6 +86,10 @@ fn parse_args() -> Args {
             "--llm-url" => args.llm_url = Some(value()),
             "--llm-modelo" => args.llm_model = Some(value()),
             "--notas" => args.notes = true,
+            "--anthropic" => args.anthropic = true,
+            "--candidato" => args.candidate = Some(value()),
+            "--cv" => args.resume = Some(value().into()),
+            "--pontos" => args.checkpoints = Some(value()),
             other => panic!("opção desconhecida: {other}"),
         }
     }
@@ -165,7 +178,24 @@ fn main() {
         })
     };
 
-    let make_llm = || {
+    // `for_notes`: com --anthropic, o slot de notas usa esforço maior, como no app.
+    let make_llm = |for_notes: bool| {
+        if args.anthropic {
+            let _ = secrets::init();
+            let key = secrets::load(Provider::Anthropic.key_name())
+                .ok()
+                .flatten()
+                .expect("salve a chave da Anthropic pelo app");
+            let mut slot = if for_notes {
+                Slot::default_notes()
+            } else {
+                Slot::default_live()
+            };
+            if let Some(m) = &args.llm_model {
+                slot.model = m.clone();
+            }
+            return Some(LlmClient::new(slot, Some(key)).expect("configurar a LLM"));
+        }
         args.llm_url.as_ref().map(|url| {
             let slot = Slot {
                 provider: Provider::Openai,
@@ -176,7 +206,16 @@ fn main() {
             LlmClient::new(slot, std::env::var("LLM_API_KEY").ok()).expect("configurar a LLM")
         })
     };
-    let llm = make_llm();
+    let llm = make_llm(false);
+    let candidate = Candidate {
+        name: args.candidate.clone().unwrap_or_default(),
+        resume: args
+            .resume
+            .as_ref()
+            .map(|p| std::fs::read_to_string(p).expect("ler o currículo"))
+            .unwrap_or_default(),
+        checkpoints: args.checkpoints.clone().unwrap_or_default(),
+    };
 
     let wav_dir = PathBuf::from("target/sonda");
     std::fs::create_dir_all(&wav_dir).unwrap();
@@ -252,7 +291,7 @@ fn main() {
 
     let analysis = kit.clone().map(|kit| AnalysisSetup {
         kit,
-        candidate: Candidate::default(),
+        candidate: candidate.clone(),
         llm,
     });
     let live = LiveSession::start(
@@ -265,6 +304,10 @@ fn main() {
                 other_side: Some("sonda".into()),
                 kit_name: kit.as_ref().map(|k| k.title.clone()),
                 kit_markdown,
+                candidate_name: Some(candidate.name.clone()).filter(|s| !s.is_empty()),
+                candidate_resume: Some(candidate.resume.clone()).filter(|s| !s.is_empty()),
+                candidate_checkpoints: Some(candidate.checkpoints.clone())
+                    .filter(|s| !s.is_empty()),
                 ..Default::default()
             },
             analysis,
@@ -304,27 +347,44 @@ fn main() {
             usage.output_tokens
         );
     }
-    if let (true, Some(llm)) = (args.notes, make_llm()) {
+    if let (true, Some(llm)) = (args.notes, make_llm(true)) {
         println!("\nGerando notas…");
+        let started = std::time::Instant::now();
         match tauri::async_runtime::block_on(notes::generate(&db, &llm, session_id)) {
             Ok(n) => {
+                println!(
+                    "  Modelo {} em {:.1} s",
+                    n.model,
+                    started.elapsed().as_secs_f32()
+                );
+                println!("  Resumo: {}", n.summary);
                 for c in &n.competencies {
-                    println!(
-                        "  {}: nota sugerida {} · {} a favor, {} contra",
-                        c.name,
-                        c.suggested_score,
-                        c.for_evidence.len(),
-                        c.against.len()
-                    );
-                    for e in c.for_evidence.iter().chain(&c.against) {
-                        println!("    [{}] {} — \"{}\"", e.minute, e.text, e.quote);
+                    println!("  {}: nota sugerida {}", c.name, c.suggested_score);
+                    for e in &c.for_evidence {
+                        println!("    + [{}] {} — \"{}\"", e.minute, e.text, e.quote);
                     }
+                    for e in &c.against {
+                        println!("    - [{}] {} — \"{}\"", e.minute, e.text, e.quote);
+                    }
+                    if !c.missing.is_empty() {
+                        println!("    sem evidência: {}", c.missing);
+                    }
+                }
+                for p in &n.resume_points {
+                    println!("  Currículo [{}] {} — {}", p.status, p.point, p.comment);
                 }
                 println!(
                     "  Evidências descartadas por trecho inexistente: {}",
                     n.dropped_quotes
                 );
-                println!("  Próximas perguntas: {:?}", n.next_questions);
+                for q in &n.next_questions {
+                    println!("  Próxima pergunta: {q}");
+                }
+                let usage = db.session_usage(session_id).expect("ler o uso");
+                println!(
+                    "  Uso total da sessão: {} chamadas, {} tokens de entrada ({} do cache), {} de saída",
+                    usage.calls, usage.input_tokens, usage.cached_tokens, usage.output_tokens
+                );
             }
             Err(e) => println!("  Falhou: {e}"),
         }
