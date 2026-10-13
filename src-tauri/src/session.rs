@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 
 use crate::audio::Source;
-use crate::db::{Db, Segment};
+use crate::db::{Db, NewSession, Segment};
 
 /// Folga, antes e depois da fala do microfone, pra procurar a mesma fala do outro lado.
 const ECHO_WINDOW_MS: u64 = 1_500;
@@ -62,10 +62,10 @@ struct Inner {
 impl Session {
     pub fn start(
         db: Arc<Db>,
-        other_side: Option<&str>,
+        new: &NewSession,
         emit: Arc<dyn Fn(SessionEvent) + Send + Sync>,
     ) -> Result<Arc<Self>, String> {
-        let id = db.create_session(other_side)?;
+        let id = db.create_session(new)?;
         Ok(Arc::new(Session {
             id,
             db,
@@ -76,6 +76,17 @@ impl Session {
 
     pub fn is_finished(&self) -> bool {
         self.inner.lock().unwrap().finished
+    }
+
+    /// Até quando o outro lado foi ouvido falando, contando os resultados parciais.
+    pub fn sistema_heard_until(&self) -> u64 {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .sistema_activity
+            .iter()
+            .map(|&(_, end)| end)
+            .max()
+            .unwrap_or(0)
     }
 
     /// Um resultado da transcrição, parcial ou final. Tempos no relógio da sessão.

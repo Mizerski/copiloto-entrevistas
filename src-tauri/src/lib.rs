@@ -1,7 +1,10 @@
+pub mod analysis;
 pub mod audio;
 pub mod db;
 pub mod deepgram;
+pub mod kit;
 pub mod live;
+pub mod llm;
 pub mod secrets;
 pub mod session;
 
@@ -9,11 +12,15 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
+use analysis::Candidate;
 use audio::{AudioApp, Input, Microphone};
-use db::{Db, Segment, SessionSummary};
+use db::{Card, Db, KitRow, Mark, NewSession, Segment, SessionDetail, SessionSummary, UsageTotals};
 use deepgram::DeepgramConfig;
-use live::{Listeners, LiveConfig, LiveSession};
+use kit::Kit;
+use live::{AnalysisSetup, Listeners, LiveConfig, LiveSession};
+use llm::{LlmClient, Provider, Slot, Usage};
 
 const DEEPGRAM: &str = "deepgram";
 
@@ -22,15 +29,14 @@ struct AppState {
     live: Mutex<Option<LiveSession>>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Started {
-    session_id: i64,
-    wav_dir: Option<String>,
+fn mark_shortcut() -> Shortcut {
+    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyM)
 }
 
 // Os comandos são `async` pra rodarem fora da thread principal: a captura usa COM em
 // modo MTA e o `stop` espera as threads terminarem.
+
+// Dispositivos
 
 #[tauri::command]
 async fn list_microphones() -> Result<Vec<Microphone>, String> {
@@ -42,13 +48,11 @@ async fn list_audio_apps() -> Result<Vec<AudioApp>, String> {
     audio::list_audio_apps()
 }
 
-/// Abre uma sessão: captura e, se `transcribe`, transcreve cada fonte na Deepgram.
-/// O outro lado vem de `app_pid` ou, no modo replay, de `replay_file`.
-#[tauri::command]
-#[allow(clippy::too_many_arguments)] // os argumentos vêm direto da tela
-async fn start_session(
-    app: AppHandle,
-    state: State<'_, AppState>,
+// Sessão ao vivo
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartRequest {
     mic_id: Option<String>,
     app_pid: Option<u32>,
     replay_file: Option<String>,
@@ -56,12 +60,37 @@ async fn start_session(
     save_wav: bool,
     transcribe: bool,
     keyterms: Vec<String>,
+    kit_id: Option<i64>,
+    candidate_name: String,
+    candidate_resume: String,
+    candidate_checkpoints: String,
+    /// Chamar a LLM a cada resposta. Sem isso, o kit só serve pro roteiro e pras
+    /// perguntas proibidas.
+    analyze: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Started {
+    session_id: i64,
+    wav_dir: Option<String>,
+    kit: Option<Kit>,
+    /// Coisas que não impediram a sessão, mas a pessoa precisa saber.
+    warnings: Vec<String>,
+}
+
+#[tauri::command]
+async fn start_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: StartRequest,
 ) -> Result<Started, String> {
     let previous = state.live.lock().unwrap().take();
     if let Some(previous) = previous {
         previous.stop().await;
     }
-    let wav_dir = if save_wav {
+    let mut warnings = Vec::new();
+    let wav_dir = if request.save_wav {
         let dir = app
             .path()
             .app_data_dir()
@@ -72,53 +101,122 @@ async fn start_session(
     } else {
         None
     };
-    let sistema = match (replay_file, app_pid) {
+    let sistema = match (request.replay_file, request.app_pid) {
         (Some(path), _) => Some(Input::File(path.into())),
         (None, Some(pid)) => Some(Input::App(pid)),
         (None, None) => None,
     };
-    let deepgram = if transcribe {
+
+    let kit_row = request.kit_id.map(|id| state.db.get_kit(id)).transpose()?;
+    let kit = kit_row.as_ref().map(|k| kit::parse(&k.markdown));
+
+    let deepgram = if request.transcribe {
         let api_key =
             secrets::load(DEEPGRAM)?.ok_or("salve a chave da Deepgram antes de transcrever")?;
+        let mut keyterms: Vec<String> = request
+            .keyterms
+            .into_iter()
+            .filter(|t| !t.trim().is_empty())
+            .collect();
+        if let Some(k) = &kit {
+            keyterms.extend(k.terms.iter().cloned());
+        }
+        if !request.candidate_name.trim().is_empty() {
+            keyterms.push(request.candidate_name.trim().to_string());
+        }
+        keyterms.sort();
+        keyterms.dedup();
         Some(DeepgramConfig {
             api_key,
             language: "pt-BR".into(),
-            keyterms: keyterms
-                .into_iter()
-                .filter(|t| !t.trim().is_empty())
-                .collect(),
+            keyterms,
         })
     } else {
         None
     };
 
-    let (a, b, c) = (app.clone(), app.clone(), app.clone());
+    let analysis = match &kit {
+        Some(kit) => {
+            let llm = if request.analyze {
+                match make_llm(&state.db, "live") {
+                    Ok(llm) => Some(llm),
+                    Err(e) => {
+                        warnings.push(format!("Análise ao vivo desligada: {e}"));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            Some(AnalysisSetup {
+                kit: kit.clone(),
+                candidate: Candidate {
+                    name: request.candidate_name.trim().to_string(),
+                    resume: request.candidate_resume.trim().to_string(),
+                    checkpoints: request.candidate_checkpoints.trim().to_string(),
+                },
+                llm,
+            })
+        }
+        None => None,
+    };
+
+    let non_empty = |s: String| Some(s.trim().to_string()).filter(|s| !s.is_empty());
+    let record = NewSession {
+        other_side: request.other_side_label,
+        kit_name: kit_row.as_ref().map(|k| k.name.clone()),
+        kit_markdown: kit_row.as_ref().map(|k| k.markdown.clone()),
+        candidate_name: non_empty(request.candidate_name),
+        candidate_resume: non_empty(request.candidate_resume),
+        candidate_checkpoints: non_empty(request.candidate_checkpoints),
+    };
+
+    let emitter = |event: &'static str| {
+        let app = app.clone();
+        move |payload: serde_json::Value| {
+            let _ = app.emit(event, payload);
+        }
+    };
+    let (capture, stt, session, analysis_events) = (
+        emitter("captura"),
+        emitter("transcricao"),
+        emitter("sessao"),
+        emitter("analise"),
+    );
     let live = LiveSession::start(
         LiveConfig {
-            mic: Some(Input::Microphone(mic_id)),
+            mic: Some(Input::Microphone(request.mic_id)),
             sistema,
-            other_side_label,
             wav_dir: wav_dir.clone(),
             deepgram,
+            record,
+            analysis,
         },
         state.db.clone(),
         Listeners {
-            on_capture: Arc::new(move |e| {
-                let _ = a.emit("captura", e);
-            }),
-            on_stt: Arc::new(move |e| {
-                let _ = b.emit("transcricao", e);
-            }),
-            on_session: Arc::new(move |e| {
-                let _ = c.emit("sessao", e);
+            on_capture: Arc::new(move |e| capture(serde_json::to_value(e).unwrap_or_default())),
+            on_stt: Arc::new(move |e| stt(serde_json::to_value(e).unwrap_or_default())),
+            on_session: Arc::new(move |e| session(serde_json::to_value(e).unwrap_or_default())),
+            on_analysis: Arc::new(move |e| {
+                analysis_events(serde_json::to_value(e).unwrap_or_default())
             }),
         },
     )?;
+    if let Some(a) = &live.analyzer {
+        let _ = app.emit(
+            "analise",
+            analysis::AnalysisEvent::Coverage {
+                items: a.coverage(),
+            },
+        );
+    }
     let session_id = live.session.id;
     *state.live.lock().unwrap() = Some(live);
     Ok(Started {
         session_id,
         wav_dir: wav_dir.map(|d| d.display().to_string()),
+        kit,
+        warnings,
     })
 }
 
@@ -132,24 +230,192 @@ async fn stop_session(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Marca o momento atual da sessão. Devolve o instante marcado.
+#[tauri::command]
+async fn mark_moment(state: State<'_, AppState>, note: Option<String>) -> Result<u64, String> {
+    let live = state.live.lock().unwrap();
+    let live = live.as_ref().ok_or("nenhuma sessão em andamento")?;
+    live.mark(note.as_deref())
+}
+
+#[tauri::command]
+async fn set_paused(state: State<'_, AppState>, paused: bool) -> Result<(), String> {
+    let live = state.live.lock().unwrap();
+    live.as_ref()
+        .ok_or("nenhuma sessão em andamento")?
+        .set_paused(paused)
+}
+
+#[tauri::command]
+async fn set_block(
+    state: State<'_, AppState>,
+    name: String,
+    minutes: Option<u32>,
+) -> Result<(), String> {
+    let live = state.live.lock().unwrap();
+    live.as_ref()
+        .ok_or("nenhuma sessão em andamento")?
+        .set_block(name, minutes);
+    Ok(())
+}
+
+// Histórico
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionFull {
+    detail: SessionDetail,
+    segments: Vec<Segment>,
+    cards: Vec<Card>,
+    marks: Vec<Mark>,
+    usage: UsageTotals,
+}
+
 #[tauri::command]
 async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, String> {
     state.db.list_sessions()
 }
 
 #[tauri::command]
-async fn session_segments(state: State<'_, AppState>, id: i64) -> Result<Vec<Segment>, String> {
-    state.db.session_segments(id)
+async fn session_full(state: State<'_, AppState>, id: i64) -> Result<SessionFull, String> {
+    Ok(SessionFull {
+        detail: state.db.session_detail(id)?,
+        segments: state.db.session_segments(id)?,
+        cards: state.db.session_cards(id)?,
+        marks: state.db.session_marks(id)?,
+        usage: state.db.session_usage(id)?,
+    })
+}
+
+fn ensure_not_running(state: &AppState, id: i64) -> Result<(), String> {
+    let running = state.live.lock().unwrap().as_ref().map(|l| l.session.id);
+    if running == Some(id) {
+        return Err("pare a sessão antes".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
 async fn delete_session(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let running = state.live.lock().unwrap().as_ref().map(|l| l.session.id);
-    if running == Some(id) {
-        return Err("pare a sessão antes de apagar".into());
-    }
+    ensure_not_running(&state, id)?;
     state.db.delete_session(id)
 }
+
+// Kits
+
+#[tauri::command]
+async fn list_kits(state: State<'_, AppState>) -> Result<Vec<KitRow>, String> {
+    state.db.list_kits()
+}
+
+#[tauri::command]
+async fn save_kit(
+    state: State<'_, AppState>,
+    id: Option<i64>,
+    markdown: String,
+) -> Result<i64, String> {
+    state.db.save_kit(id, &markdown)
+}
+
+#[tauri::command]
+async fn delete_kit(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    state.db.delete_kit(id)
+}
+
+#[tauri::command]
+async fn parse_kit(markdown: String) -> Kit {
+    kit::parse(&markdown)
+}
+
+#[tauri::command]
+async fn import_kit_file(state: State<'_, AppState>, path: String) -> Result<i64, String> {
+    let markdown = std::fs::read_to_string(&path).map_err(|e| format!("não leu {path}: {e}"))?;
+    state.db.save_kit(None, &markdown)
+}
+
+/// Grava texto num arquivo escolhido pela pessoa no diálogo de salvar.
+#[tauri::command]
+async fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents).map_err(|e| format!("não gravou {path}: {e}"))
+}
+
+// LLM
+
+fn slot_key(name: &str) -> Result<&'static str, String> {
+    match name {
+        "live" => Ok("llm.live"),
+        "notes" => Ok("llm.notes"),
+        _ => Err(format!("slot desconhecido: {name}")),
+    }
+}
+
+fn load_slot(db: &Db, name: &str) -> Result<Slot, String> {
+    let stored = db.get_setting(slot_key(name)?)?;
+    Ok(stored
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_else(|| {
+            if name == "live" {
+                Slot::default_live()
+            } else {
+                Slot::default_notes()
+            }
+        }))
+}
+
+fn make_llm(db: &Db, name: &str) -> Result<LlmClient, String> {
+    let slot = load_slot(db, name)?;
+    let key = secrets::load(slot.provider.key_name())?;
+    LlmClient::new(slot, key)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LlmSettings {
+    live: Slot,
+    notes: Slot,
+    anthropic_key: Option<String>,
+    openai_key: Option<String>,
+}
+
+#[tauri::command]
+async fn llm_settings(state: State<'_, AppState>) -> Result<LlmSettings, String> {
+    let mask = |p: Provider| secrets::load(p.key_name()).map(|k| k.map(|k| secrets::mask(&k)));
+    Ok(LlmSettings {
+        live: load_slot(&state.db, "live")?,
+        notes: load_slot(&state.db, "notes")?,
+        anthropic_key: mask(Provider::Anthropic)?,
+        openai_key: mask(Provider::Openai)?,
+    })
+}
+
+#[tauri::command]
+async fn save_llm_slot(state: State<'_, AppState>, name: String, slot: Slot) -> Result<(), String> {
+    let json = serde_json::to_string(&slot).map_err(|e| e.to_string())?;
+    state.db.set_setting(slot_key(&name)?, &json)
+}
+
+#[tauri::command]
+async fn save_llm_key(provider: Provider, key: String) -> Result<String, String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("a chave está vazia".into());
+    }
+    secrets::save(provider.key_name(), key)?;
+    Ok(secrets::mask(key))
+}
+
+#[tauri::command]
+async fn delete_llm_key(provider: Provider) -> Result<(), String> {
+    secrets::delete(provider.key_name())
+}
+
+#[tauri::command]
+async fn test_llm(state: State<'_, AppState>, name: String) -> Result<Usage, String> {
+    let llm = make_llm(&state.db, &name)?;
+    llm.test().await
+}
+
+// Deepgram
 
 /// Chave salva, mascarada, ou `None`.
 #[tauri::command]
@@ -188,6 +454,20 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed || shortcut != &mark_shortcut() {
+                        return;
+                    }
+                    let state = app.state::<AppState>();
+                    let live = state.live.lock().unwrap();
+                    if let Some(t) = live.as_ref().and_then(|l| l.mark(None).ok()) {
+                        let _ = app.emit("marcacao", t);
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -196,6 +476,10 @@ pub fn run() {
                 db: Arc::new(db),
                 live: Mutex::new(None),
             });
+            // Outro app pode já ter o atalho; o botão na tela continua funcionando.
+            if let Err(e) = app.global_shortcut().register(mark_shortcut()) {
+                eprintln!("atalho Ctrl+Shift+M indisponível: {e}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -203,9 +487,23 @@ pub fn run() {
             list_audio_apps,
             start_session,
             stop_session,
+            mark_moment,
+            set_paused,
+            set_block,
             list_sessions,
-            session_segments,
+            session_full,
             delete_session,
+            list_kits,
+            save_kit,
+            delete_kit,
+            parse_kit,
+            import_kit_file,
+            write_text_file,
+            llm_settings,
+            save_llm_slot,
+            save_llm_key,
+            delete_llm_key,
+            test_llm,
             deepgram_key_status,
             save_deepgram_key,
             test_deepgram_key,

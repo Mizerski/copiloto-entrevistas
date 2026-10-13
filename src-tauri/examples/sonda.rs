@@ -1,4 +1,4 @@
-//! Testa captura, transcrição e sessão sem a interface, pelo mesmo caminho do app.
+//! Testa captura, transcrição, sessão e análise sem a interface, pelo mesmo caminho do app.
 //!
 //!     cargo run --example sonda -- [opções]
 //!
@@ -11,9 +11,12 @@
 //!     --esperado-mic X.txt   o mesmo pra você (mostra se o eco vazou)
 //!     --termos "a,b"         termos difíceis pra Deepgram
 //!     --sem-transcricao      só captura
+//!     --kit X.md             kit da entrevista (liga cobertura e perguntas proibidas)
+//!     --llm-url URL          LLM compatível com OpenAI pra análise (ex.: o `llm_falso`)
+//!     --llm-modelo M         modelo dessa LLM (chave opcional em LLM_API_KEY)
 //!
-//! A chave vem de DEEPGRAM_API_KEY ou, se não definida, do Credential Manager
-//! (a mesma que o app salva). A sessão vai pra um banco em memória.
+//! A chave da Deepgram vem de DEEPGRAM_API_KEY ou, se não definida, do Credential
+//! Manager (a mesma que o app salva). A sessão vai pra um banco em memória.
 //! Salva mic.wav e sistema.wav em target/sonda.
 
 use std::collections::BTreeMap;
@@ -21,10 +24,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use copiloto_entrevistas_lib::analysis::{AnalysisEvent, Candidate};
 use copiloto_entrevistas_lib::audio::{self, CaptureEvent, Input, Source};
-use copiloto_entrevistas_lib::db::{Db, Segment};
+use copiloto_entrevistas_lib::db::{Db, NewSession, Segment};
 use copiloto_entrevistas_lib::deepgram::{self, DeepgramConfig, SttEvent};
-use copiloto_entrevistas_lib::live::{Listeners, LiveConfig, LiveSession};
+use copiloto_entrevistas_lib::kit;
+use copiloto_entrevistas_lib::live::{AnalysisSetup, Listeners, LiveConfig, LiveSession};
+use copiloto_entrevistas_lib::llm::{LlmClient, Provider, Slot};
 use copiloto_entrevistas_lib::secrets;
 use copiloto_entrevistas_lib::session::{SessionEvent, words};
 
@@ -39,6 +45,9 @@ struct Args {
     expected_mic: Option<PathBuf>,
     keyterms: Vec<String>,
     no_stt: bool,
+    kit: Option<PathBuf>,
+    llm_url: Option<String>,
+    llm_model: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -61,6 +70,9 @@ fn parse_args() -> Args {
                 args.keyterms = value().split(',').map(|t| t.trim().to_string()).collect()
             }
             "--sem-transcricao" => args.no_stt = true,
+            "--kit" => args.kit = Some(value().into()),
+            "--llm-url" => args.llm_url = Some(value()),
+            "--llm-modelo" => args.llm_model = Some(value()),
             other => panic!("opção desconhecida: {other}"),
         }
     }
@@ -106,6 +118,23 @@ fn main() {
         (None, false) => Some(Input::Microphone(None)),
     };
 
+    let kit_markdown = args
+        .kit
+        .as_ref()
+        .map(|p| std::fs::read_to_string(p).expect("ler o kit"));
+    let kit = kit_markdown.as_deref().map(kit::parse);
+    if let Some(k) = &kit {
+        println!(
+            "Kit: {} ({} competências, {} blocos)",
+            k.title,
+            k.competencies.len(),
+            k.blocks.len()
+        );
+        for w in &k.warnings {
+            println!("  aviso: {w}");
+        }
+    }
+
     let deepgram_config = if args.no_stt {
         None
     } else {
@@ -121,12 +150,26 @@ fn main() {
             println!("Chave recusada: {e}");
             return;
         }
+        let mut keyterms = args.keyterms.clone();
+        if let Some(k) = &kit {
+            keyterms.extend(k.terms.iter().cloned());
+        }
         Some(DeepgramConfig {
             api_key,
             language: "pt-BR".into(),
-            keyterms: args.keyterms.clone(),
+            keyterms,
         })
     };
+
+    let llm = args.llm_url.as_ref().map(|url| {
+        let slot = Slot {
+            provider: Provider::Openai,
+            model: args.llm_model.clone().unwrap_or_else(|| "falso".into()),
+            base_url: url.clone(),
+            effort: String::new(),
+        };
+        LlmClient::new(slot, std::env::var("LLM_API_KEY").ok()).expect("configurar a LLM")
+    });
 
     let wav_dir = PathBuf::from("target/sonda");
     std::fs::create_dir_all(&wav_dir).unwrap();
@@ -173,16 +216,51 @@ fn main() {
                 ),
                 other => println!("{other:?}"),
             }),
+            on_analysis: Arc::new(|event| match event {
+                AnalysisEvent::Card { card } => {
+                    println!("    CARD [{}/{}] {}", card.kind, card.priority, card.text)
+                }
+                AnalysisEvent::Coverage { items } => {
+                    for c in items.iter().filter(|c| c.evidence.len() > 0) {
+                        println!(
+                            "    COBERTURA {}: {:?} \"{}\"",
+                            c.competency, c.level, c.evidence
+                        );
+                    }
+                }
+                AnalysisEvent::Status {
+                    state,
+                    message,
+                    latency_ms,
+                } => println!(
+                    "    análise: {state}{}{}",
+                    latency_ms
+                        .map(|l| format!(" em {l} ms"))
+                        .unwrap_or_default(),
+                    message.map(|m| format!(" ({m})")).unwrap_or_default()
+                ),
+            }),
         }
     };
 
+    let analysis = kit.clone().map(|kit| AnalysisSetup {
+        kit,
+        candidate: Candidate::default(),
+        llm,
+    });
     let live = LiveSession::start(
         LiveConfig {
             mic,
             sistema,
-            other_side_label: Some("sonda".into()),
             wav_dir: Some(wav_dir.clone()),
             deepgram: deepgram_config,
+            record: NewSession {
+                other_side: Some("sonda".into()),
+                kit_name: kit.as_ref().map(|k| k.title.clone()),
+                kit_markdown,
+                ..Default::default()
+            },
+            analysis,
         },
         db.clone(),
         listeners,
@@ -193,6 +271,10 @@ fn main() {
     println!("Capturando por {seconds} s…");
     std::thread::sleep(Duration::from_secs(seconds));
     tauri::async_runtime::block_on(live.stop());
+    // Tempo pra última análise voltar.
+    if kit.is_some() {
+        std::thread::sleep(Duration::from_secs(3));
+    }
 
     if args.no_stt {
         println!("RMS máximo por segundo:");
@@ -205,6 +287,15 @@ fn main() {
         report(&segments, &partial_latency.lock().unwrap());
         compare(&segments, Source::Sistema, args.expected.as_ref());
         compare(&segments, Source::Mic, args.expected_mic.as_ref());
+        let cards = db.session_cards(session_id).expect("ler os cards");
+        let usage = db.session_usage(session_id).expect("ler o uso");
+        println!(
+            "\nCards gravados: {} | chamadas de LLM: {} ({} tokens de entrada, {} de saída)",
+            cards.len(),
+            usage.calls,
+            usage.input_tokens,
+            usage.output_tokens
+        );
     }
     println!("WAVs em {}", wav_dir.canonicalize().unwrap().display());
 }

@@ -1,14 +1,17 @@
 //! Liga as peças de uma sessão ao vivo: captura → transcrição por fonte → sessão
-//! (filtro de eco e banco). Usado pelo app e pela sonda.
+//! (filtro de eco e banco) → análise. Usado pelo app e pela sonda.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::analysis::{AnalysisEvent, Analyzer, Candidate};
 use crate::audio::{Capture, CaptureConfig, CaptureEvent, Input, Source};
-use crate::db::Db;
+use crate::db::{Db, NewSession};
 use crate::deepgram::{self, DeepgramConfig, SttEvent};
+use crate::kit::Kit;
+use crate::llm::LlmClient;
 use crate::session::{Session, SessionEvent};
 
 const TICK: Duration = Duration::from_millis(250);
@@ -18,32 +21,70 @@ const STT_DRAIN: Duration = Duration::from_secs(8);
 pub struct LiveConfig {
     pub mic: Option<Input>,
     pub sistema: Option<Input>,
-    /// Como o outro lado aparece no histórico (nome do app ou do arquivo).
-    pub other_side_label: Option<String>,
     pub wav_dir: Option<PathBuf>,
     /// `None` só captura, sem transcrever.
     pub deepgram: Option<DeepgramConfig>,
+    /// O que fica gravado na sessão (outro lado, kit, candidato).
+    pub record: NewSession,
+    /// `None` desliga a análise. Com kit e sem LLM, só checa perguntas proibidas.
+    pub analysis: Option<AnalysisSetup>,
+}
+
+pub struct AnalysisSetup {
+    pub kit: Kit,
+    pub candidate: Candidate,
+    pub llm: Option<LlmClient>,
 }
 
 pub struct Listeners {
     pub on_capture: Arc<dyn Fn(CaptureEvent) + Send + Sync>,
     pub on_stt: Arc<dyn Fn(SttEvent) + Send + Sync>,
     pub on_session: Arc<dyn Fn(SessionEvent) + Send + Sync>,
+    pub on_analysis: Arc<dyn Fn(AnalysisEvent) + Send + Sync>,
 }
 
 pub struct LiveSession {
     capture: Capture,
     pub session: Arc<Session>,
+    pub analyzer: Option<Arc<Analyzer>>,
+    db: Arc<Db>,
     started_at: Instant,
     open_streams: Arc<AtomicUsize>,
+    paused: Arc<AtomicBool>,
 }
 
 impl LiveSession {
     pub fn start(config: LiveConfig, db: Arc<Db>, listeners: Listeners) -> Result<Self, String> {
         let started_at = Instant::now();
-        let session = Session::start(db, config.other_side_label.as_deref(), listeners.on_session)?;
-        let open_streams = Arc::new(AtomicUsize::new(0));
 
+        // A análise precisa do id da sessão, e a sessão precisa avisar a análise: o
+        // analisador entra depois, por aqui.
+        let analyzer_slot: Arc<OnceLock<Arc<Analyzer>>> = Arc::default();
+        let on_session = {
+            let slot = analyzer_slot.clone();
+            let forward = listeners.on_session.clone();
+            Arc::new(move |event: SessionEvent| {
+                if let (SessionEvent::Segment { segment }, Some(a)) = (&event, slot.get()) {
+                    a.on_segment(segment);
+                }
+                forward(event);
+            })
+        };
+        let session = Session::start(db.clone(), &config.record, on_session)?;
+        let analyzer = config.analysis.map(|setup| {
+            let a = Analyzer::new(
+                session.id,
+                db.clone(),
+                setup.llm,
+                setup.kit,
+                &setup.candidate,
+                listeners.on_analysis.clone(),
+            );
+            let _ = analyzer_slot.set(a.clone());
+            a
+        });
+
+        let open_streams = Arc::new(AtomicUsize::new(0));
         let (mut mic_stt, mut sistema_stt) = (None, None);
         if let Some(deepgram) = config.deepgram {
             let deepgram = Arc::new(deepgram);
@@ -94,6 +135,7 @@ impl LiveSession {
             }
         }
 
+        let paused = Arc::new(AtomicBool::new(false));
         let on_capture = listeners.on_capture;
         let capture = Capture::start(
             CaptureConfig {
@@ -103,13 +145,20 @@ impl LiveSession {
                 started_at,
             },
             move |event| on_capture(event),
-            move |chunk| {
-                let stt = match chunk.source {
-                    Source::Mic => &mic_stt,
-                    Source::Sistema => &sistema_stt,
-                };
-                if let Some(tx) = stt {
-                    let _ = tx.send(chunk);
+            {
+                let paused = paused.clone();
+                move |chunk| {
+                    // Pausado, o áudio não sai do computador; a transcrição recebe silêncio.
+                    if paused.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let stt = match chunk.source {
+                        Source::Mic => &mic_stt,
+                        Source::Sistema => &sistema_stt,
+                    };
+                    if let Some(tx) = stt {
+                        let _ = tx.send(chunk);
+                    }
                 }
             },
         );
@@ -121,21 +170,55 @@ impl LiveSession {
             }
         };
 
-        let ticking = session.clone();
+        let (ticking, ticking_analyzer) = (session.clone(), analyzer.clone());
         tauri::async_runtime::spawn(async move {
             let mut interval = tokio::time::interval(TICK);
             while !ticking.is_finished() {
                 interval.tick().await;
-                ticking.tick(started_at.elapsed().as_millis() as u64);
+                let now = started_at.elapsed().as_millis() as u64;
+                ticking.tick(now);
+                if let Some(a) = &ticking_analyzer {
+                    a.tick(now, ticking.sistema_heard_until());
+                }
             }
         });
 
         Ok(LiveSession {
             capture,
             session,
+            analyzer,
+            db,
             started_at,
             open_streams,
+            paused,
         })
+    }
+
+    pub fn elapsed_ms(&self) -> u64 {
+        self.started_at.elapsed().as_millis() as u64
+    }
+
+    /// Marca o momento atual ("isso foi importante"). Devolve o instante marcado.
+    pub fn mark(&self, note: Option<&str>) -> Result<u64, String> {
+        let t = self.elapsed_ms();
+        self.db.insert_mark(self.session.id, t, "mark", note)?;
+        Ok(t)
+    }
+
+    /// Pausa ou retoma a transcrição (o candidato pediu pra não ser transcrito).
+    pub fn set_paused(&self, paused: bool) -> Result<(), String> {
+        if self.paused.swap(paused, Ordering::SeqCst) != paused {
+            let kind = if paused { "pause" } else { "resume" };
+            self.db
+                .insert_mark(self.session.id, self.elapsed_ms(), kind, None)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_block(&self, name: String, minutes: Option<u32>) {
+        if let Some(a) = &self.analyzer {
+            a.set_block(name, minutes, self.elapsed_ms());
+        }
     }
 
     /// Para a captura, espera as últimas falas da transcrição e fecha a sessão.
@@ -146,6 +229,10 @@ impl LiveSession {
         let deadline = Instant::now() + STT_DRAIN;
         while self.open_streams.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // A última resposta fecha com o fim da sessão.
+        if let Some(a) = &self.analyzer {
+            a.flush(duration_ms);
         }
         self.session.finish(duration_ms);
     }
