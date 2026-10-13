@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { ask } from "@tauri-apps/plugin-dialog";
 import type { LlmSettings, LlmUsage, Provider, Slot } from "./types";
 
 const SLOT_LABEL = {
@@ -68,10 +69,32 @@ export function Settings({ onLog }: { onLog: (line: string) => void }) {
   const [llm, setLlm] = useState<LlmSettings | null>(null);
   const [testing, setTesting] = useState<SlotName | null>(null);
   const [results, setResults] = useState<Partial<Record<SlotName, string>>>({});
+  const [retention, setRetention] = useState(0);
 
   async function load() {
     setDeepgramMask(await invoke<string | null>("deepgram_key_status"));
     setLlm(await invoke<LlmSettings>("llm_settings"));
+    setRetention(await invoke<number>("retention_days"));
+  }
+
+  async function changeRetention(days: number) {
+    const purged = await invoke<number>("set_retention_days", { days });
+    setRetention(days);
+    if (purged > 0) onLog(`Transcrição apagada em ${purged} sessão(ões) antigas com notas`);
+  }
+
+  async function deleteEverything() {
+    const ok = await ask("Apagar todas as sessões, transcrições e notas? Kits e chaves ficam. Não dá pra desfazer.", {
+      kind: "warning",
+      okLabel: "Apagar tudo",
+    });
+    if (!ok) return;
+    try {
+      await invoke("delete_everything");
+      onLog("Todas as sessões foram apagadas");
+    } catch (e) {
+      onLog(`Não apagou: ${e}`);
+    }
   }
 
   useEffect(() => {
@@ -209,6 +232,27 @@ export function Settings({ onLog }: { onLog: (line: string) => void }) {
             </section>
           );
         })}
+      <section>
+        <div className="section-title">Dados</div>
+        <p className="hint">
+          Tudo fica neste computador. A transcrição é dado pessoal de quem foi entrevistado: guarde só o tempo
+          necessário.
+        </p>
+        <label>
+          Apagar a transcrição de sessões com notas depois de
+          <select value={retention} onChange={(e) => changeRetention(Number(e.target.value))}>
+            <option value={0}>nunca</option>
+            <option value={7}>7 dias</option>
+            <option value={30}>30 dias</option>
+            <option value={90}>90 dias</option>
+          </select>
+        </label>
+        <div className="row">
+          <button className="danger" onClick={deleteEverything}>
+            Apagar todas as sessões
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

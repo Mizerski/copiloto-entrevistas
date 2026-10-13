@@ -515,7 +515,7 @@ fn join(segments: &[Segment]) -> String {
 
 /// O trecho citado está na resposta? Tolera pequenas diferenças: 80% das palavras do
 /// trecho precisam aparecer na resposta.
-fn quote_in(quote: &str, answer_folded: &str) -> bool {
+pub fn quote_in(quote: &str, answer_folded: &str) -> bool {
     let quote = fold(quote);
     if quote.is_empty() {
         return false;

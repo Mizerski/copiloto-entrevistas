@@ -14,6 +14,7 @@
 //!     --kit X.md             kit da entrevista (liga cobertura e perguntas proibidas)
 //!     --llm-url URL          LLM compatível com OpenAI pra análise (ex.: o `llm_falso`)
 //!     --llm-modelo M         modelo dessa LLM (chave opcional em LLM_API_KEY)
+//!     --notas                gera as notas pós-entrevista no fim (precisa de --llm-url)
 //!
 //! A chave da Deepgram vem de DEEPGRAM_API_KEY ou, se não definida, do Credential
 //! Manager (a mesma que o app salva). A sessão vai pra um banco em memória.
@@ -31,6 +32,7 @@ use copiloto_entrevistas_lib::deepgram::{self, DeepgramConfig, SttEvent};
 use copiloto_entrevistas_lib::kit;
 use copiloto_entrevistas_lib::live::{AnalysisSetup, Listeners, LiveConfig, LiveSession};
 use copiloto_entrevistas_lib::llm::{LlmClient, Provider, Slot};
+use copiloto_entrevistas_lib::notes;
 use copiloto_entrevistas_lib::secrets;
 use copiloto_entrevistas_lib::session::{SessionEvent, words};
 
@@ -48,6 +50,7 @@ struct Args {
     kit: Option<PathBuf>,
     llm_url: Option<String>,
     llm_model: Option<String>,
+    notes: bool,
 }
 
 fn parse_args() -> Args {
@@ -73,6 +76,7 @@ fn parse_args() -> Args {
             "--kit" => args.kit = Some(value().into()),
             "--llm-url" => args.llm_url = Some(value()),
             "--llm-modelo" => args.llm_model = Some(value()),
+            "--notas" => args.notes = true,
             other => panic!("opção desconhecida: {other}"),
         }
     }
@@ -161,15 +165,18 @@ fn main() {
         })
     };
 
-    let llm = args.llm_url.as_ref().map(|url| {
-        let slot = Slot {
-            provider: Provider::Openai,
-            model: args.llm_model.clone().unwrap_or_else(|| "falso".into()),
-            base_url: url.clone(),
-            effort: String::new(),
-        };
-        LlmClient::new(slot, std::env::var("LLM_API_KEY").ok()).expect("configurar a LLM")
-    });
+    let make_llm = || {
+        args.llm_url.as_ref().map(|url| {
+            let slot = Slot {
+                provider: Provider::Openai,
+                model: args.llm_model.clone().unwrap_or_else(|| "falso".into()),
+                base_url: url.clone(),
+                effort: String::new(),
+            };
+            LlmClient::new(slot, std::env::var("LLM_API_KEY").ok()).expect("configurar a LLM")
+        })
+    };
+    let llm = make_llm();
 
     let wav_dir = PathBuf::from("target/sonda");
     std::fs::create_dir_all(&wav_dir).unwrap();
@@ -296,6 +303,31 @@ fn main() {
             usage.input_tokens,
             usage.output_tokens
         );
+    }
+    if let (true, Some(llm)) = (args.notes, make_llm()) {
+        println!("\nGerando notas…");
+        match tauri::async_runtime::block_on(notes::generate(&db, &llm, session_id)) {
+            Ok(n) => {
+                for c in &n.competencies {
+                    println!(
+                        "  {}: nota sugerida {} · {} a favor, {} contra",
+                        c.name,
+                        c.suggested_score,
+                        c.for_evidence.len(),
+                        c.against.len()
+                    );
+                    for e in c.for_evidence.iter().chain(&c.against) {
+                        println!("    [{}] {} — \"{}\"", e.minute, e.text, e.quote);
+                    }
+                }
+                println!(
+                    "  Evidências descartadas por trecho inexistente: {}",
+                    n.dropped_quotes
+                );
+                println!("  Próximas perguntas: {:?}", n.next_questions);
+            }
+            Err(e) => println!("  Falhou: {e}"),
+        }
     }
     println!("WAVs em {}", wav_dir.canonicalize().unwrap().display());
 }

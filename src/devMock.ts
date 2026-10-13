@@ -177,6 +177,39 @@ export function installDevMock() {
           ];
         case "session_full":
           return fullSession;
+        case "generate_notes": {
+          const notes = {
+            generatedAt: Date.now(),
+            model: "demonstração",
+            competencies: parseKit(backendKit).competencies.map((c, i) => ({
+              name: c.name,
+              suggestedScore: i === 0 ? 4 : i === 1 ? 3 : 0,
+              score: i === 0 ? 4 : i === 1 ? 3 : 0,
+              forEvidence:
+                i < 2
+                  ? [{ text: "Explicou idempotência com um caso real.", quote: "cada consumidor precisava ser idempotente", minute: "0:18" }]
+                  : [],
+              against: i === 1 ? [{ text: "Não disse o que fazia com mensagens que falhavam.", quote: "A gente usava Kafka", minute: "0:10" }] : [],
+              missing: i >= 2 ? "Não apareceu na conversa." : "",
+              comment: "",
+            })),
+            resumePoints: [{ point: "Liderou a migração de pagamentos", status: "nao_verificado", comment: "Falou sempre no plural." }],
+            nextQuestions: ["Qual foi exatamente a sua parte na migração?", "Como vocês tratavam mensagens que falhavam?"],
+            summary: "Entrevista técnica sobre a migração de pagamentos para eventos.",
+            interviewerNotes: "",
+            reviewed: false,
+            droppedQuotes: 1,
+          };
+          fullSession.detail.notesJson = JSON.stringify(notes);
+          return new Promise((resolve) => setTimeout(() => resolve(notes), 800));
+        }
+        case "save_notes":
+          fullSession.detail.notesJson = JSON.stringify(a.notes);
+          return null;
+        case "retention_days":
+          return 30;
+        case "set_retention_days":
+          return 0;
         default:
           // Janela, diálogos e o que mais não precisa de resposta na demonstração.
           return cmd.startsWith("plugin:dialog|ask") ? true : null;

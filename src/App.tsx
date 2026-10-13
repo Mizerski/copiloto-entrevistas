@@ -7,6 +7,7 @@ import { average, formatClock, formatMs } from "./format";
 import { History } from "./History";
 import { BlockClock, CardList, CoveragePanel, visibleCards } from "./Insights";
 import { Kits } from "./Kits";
+import { Notes } from "./Notes";
 import { computeMetrics } from "./metrics";
 import { Settings } from "./Settings";
 import { insertSegment, Transcript } from "./Transcript";
@@ -24,6 +25,7 @@ import {
   type Microphone,
   type Segment,
   type SessionEvent,
+  type SessionFull,
   type Source,
   type SttEvent,
 } from "./types";
@@ -75,6 +77,8 @@ function App() {
 
   // Sessão
   const [startedAt, setStartedAt] = useState(0);
+  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [finished, setFinished] = useState<SessionFull | null>(null);
   const [now, setNow] = useState(Date.now());
   const [kit, setKit] = useState<Kit | null>(null);
   const [levels, setLevels] = useState<Record<Source, number>>({ mic: 0, sistema: 0 });
@@ -260,6 +264,8 @@ function App() {
           analyze,
         },
       });
+      setSessionId(started.sessionId);
+      setFinished(null);
       const t0 = Date.now();
       startedAtRef.current = t0;
       setStartedAt(t0);
@@ -280,6 +286,16 @@ function App() {
     setPartials(EMPTY_TEXT);
     setReconnecting(null);
     setPhase("done");
+    await loadFinished();
+  }
+
+  async function loadFinished() {
+    if (sessionId === null) return;
+    try {
+      setFinished(await invoke<SessionFull>("session_full", { id: sessionId }));
+    } catch (e) {
+      addLog(`Não carregou a sessão: ${e}`);
+    }
   }
 
   async function markMoment() {
@@ -470,6 +486,8 @@ function App() {
           </label>
         </div>
       )}
+
+      {phase === "done" && finished && <Notes session={finished} onChanged={loadFinished} />}
 
       {paused && <p className="warning">Transcrição pausada: o áudio não está saindo do computador.</p>}
       {reconnecting && <p className="warning">Reconectando a transcrição ({SOURCE_LABEL[reconnecting]})…</p>}

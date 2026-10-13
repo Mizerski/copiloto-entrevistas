@@ -5,6 +5,7 @@ pub mod deepgram;
 pub mod kit;
 pub mod live;
 pub mod llm;
+pub mod notes;
 pub mod secrets;
 pub mod session;
 
@@ -301,6 +302,62 @@ async fn delete_session(state: State<'_, AppState>, id: i64) -> Result<(), Strin
     state.db.delete_session(id)
 }
 
+// Notas e dados
+
+#[tauri::command]
+async fn generate_notes(state: State<'_, AppState>, id: i64) -> Result<notes::Notes, String> {
+    ensure_not_running(&state, id)?;
+    let llm = make_llm(&state.db, "notes")?;
+    notes::generate(&state.db, &llm, id).await
+}
+
+#[tauri::command]
+async fn save_notes(
+    state: State<'_, AppState>,
+    id: i64,
+    notes: notes::Notes,
+) -> Result<(), String> {
+    let json = serde_json::to_string(&notes).map_err(|e| e.to_string())?;
+    state.db.save_notes(id, &json)
+}
+
+/// Apaga a transcrição de uma sessão e mantém as notas.
+#[tauri::command]
+async fn delete_transcript(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    ensure_not_running(&state, id)?;
+    state.db.delete_transcript(id)
+}
+
+const RETENTION_KEY: &str = "retention.days";
+
+/// Dias até apagar a transcrição de sessões com notas; 0 = nunca.
+#[tauri::command]
+async fn retention_days(state: State<'_, AppState>) -> Result<i64, String> {
+    Ok(state
+        .db
+        .get_setting(RETENTION_KEY)?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0))
+}
+
+#[tauri::command]
+async fn set_retention_days(state: State<'_, AppState>, days: i64) -> Result<usize, String> {
+    state.db.set_setting(RETENTION_KEY, &days.to_string())?;
+    if days > 0 {
+        state.db.purge_old_transcripts(days)
+    } else {
+        Ok(0)
+    }
+}
+
+#[tauri::command]
+async fn delete_everything(state: State<'_, AppState>) -> Result<(), String> {
+    if state.live.lock().unwrap().is_some() {
+        return Err("pare a sessão antes".into());
+    }
+    state.db.delete_everything()
+}
+
 // Kits
 
 #[tauri::command]
@@ -472,6 +529,15 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let db = Db::open(&dir.join("copiloto.db"))?;
+            // Retenção: transcrições de sessões já com notas somem depois de N dias.
+            if let Some(days) = db
+                .get_setting(RETENTION_KEY)?
+                .and_then(|v| v.parse::<i64>().ok())
+            {
+                if days > 0 {
+                    db.purge_old_transcripts(days)?;
+                }
+            }
             app.manage(AppState {
                 db: Arc::new(db),
                 live: Mutex::new(None),
@@ -493,6 +559,12 @@ pub fn run() {
             list_sessions,
             session_full,
             delete_session,
+            generate_notes,
+            save_notes,
+            delete_transcript,
+            retention_days,
+            set_retention_days,
+            delete_everything,
             list_kits,
             save_kit,
             delete_kit,
