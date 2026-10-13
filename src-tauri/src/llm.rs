@@ -61,10 +61,11 @@ pub struct Slot {
 }
 
 impl Slot {
+    /// Ao vivo vale a velocidade: a sugestão precisa voltar em cerca de 1 s.
     pub fn default_live() -> Self {
         Slot {
             provider: Provider::Anthropic,
-            model: "claude-opus-5-5".into(),
+            model: "claude-haiku-5-5".into(),
             base_url: "https://api.openai.com/v1".into(),
             effort: "low".into(),
         }
@@ -72,6 +73,7 @@ impl Slot {
 
     pub fn default_notes() -> Self {
         Slot {
+            model: "claude-opus-5-5".into(),
             effort: "high".into(),
             ..Self::default_live()
         }

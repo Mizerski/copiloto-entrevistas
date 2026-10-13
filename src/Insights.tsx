@@ -3,7 +3,14 @@
 import { Badge, Box, Card, Flex, IconButton, Text, Tooltip } from "@radix-ui/themes";
 import { ChevronLeftIcon, ChevronRightIcon, Cross2Icon } from "@radix-ui/react-icons";
 import { formatClock } from "./format";
-import { CARD_LABEL, LEVEL_LABEL, type Block, type Card as LiveCard, type CoverageItem } from "./types";
+import {
+  CARD_LABEL,
+  LEVEL_LABEL,
+  type Block,
+  type Card as LiveCard,
+  type CoverageItem,
+  type Suggestion,
+} from "./types";
 
 const LEVEL_COLOR = { none: "gray", partial: "orange", strong: "green" } as const;
 
@@ -66,6 +73,40 @@ export function CardList({ cards, onDismiss }: { cards: LiveCard[]; onDismiss?: 
         );
       })}
     </Flex>
+  );
+}
+
+/** A próxima pergunta, pronta pra ler. Troca sozinha a cada sugestão nova. */
+export function SuggestionCard({ suggestion, waiting }: { suggestion: Suggestion | null; waiting: boolean }) {
+  return (
+    <Card size="2" className="hint-card suggestion">
+      <Flex align="center" gap="2" mb="1">
+        <Text size="1" weight="medium" color="orange">
+          Pergunte agora
+        </Text>
+        {suggestion && (
+          <Text size="1" color="gray" className="tabular">
+            {CARD_LABEL[suggestion.kind] ?? suggestion.kind} · {formatClock(suggestion.tMs)}
+          </Text>
+        )}
+      </Flex>
+      {suggestion ? (
+        <>
+          <Text as="p" size="4" weight="medium" key={suggestion.id} className="suggestion-text">
+            {suggestion.question}
+          </Text>
+          {suggestion.why && (
+            <Text as="p" size="1" color="gray" mt="1">
+              {suggestion.why}
+            </Text>
+          )}
+        </>
+      ) : (
+        <Text as="p" size="2" color="gray">
+          {waiting ? "Ouvindo a resposta…" : "A sugestão aparece enquanto o candidato responde."}
+        </Text>
+      )}
+    </Card>
   );
 }
 

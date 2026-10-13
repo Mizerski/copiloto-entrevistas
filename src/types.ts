@@ -48,8 +48,11 @@ export type CoverageItem = { competency: string; level: Level; evidence: string;
 
 export type Card = { id: number; tMs: number; kind: string; text: string; priority: string };
 
+export type Suggestion = { id: number; tMs: number; kind: string; question: string; why: string; latencyMs: number };
+
 export type AnalysisEvent =
   | { kind: "card"; card: Card }
+  | { kind: "suggestion"; suggestion: Suggestion }
   | { kind: "coverage"; items: CoverageItem[] }
   | { kind: "status"; state: string; message: string | null; latencyMs: number | null };
 
@@ -136,6 +139,7 @@ export const CARD_LABEL: Record<string, string> = {
   vaga: "Resposta vaga",
   contradicao: "Contradição",
   nao_tocada: "Não explorada",
+  roteiro: "Roteiro",
   indutiva: "Pergunta indutiva",
   positivo: "Sinal forte",
   proibida: "Pergunta proibida",

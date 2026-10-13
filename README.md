@@ -10,10 +10,10 @@ Todas as fases do roadmap estão no código (0 a 5). Ainda falta validar numa en
 - **Transcrição:** uma conexão por fonte com a Deepgram (Nova-3, `pt-BR`), com parciais, termos difíceis do kit e reconexão automática.
 - **Eco:** fala do microfone que repete o candidato no mesmo intervalo é descartada (sem fone, a caixa vaza pro microfone).
 - **Kit de entrevista:** Markdown com vaga, competências (sinais forte e fraco), roteiro por bloco com tempo, perguntas proibidas e termos. Editor com pré-visualização, importar e exportar.
-- **Ao vivo:** relógio por bloco, cobertura das competências (sempre com trecho citado), até 3 cards de sugestão, alerta imediato de pergunta proibida, modo foco, marcação (Ctrl+Shift+M), pausa da transcrição, métricas (tempo de fala, perguntas abertas).
+- **Ao vivo:** "Pergunte agora" com a próxima pergunta pronta pra ler, atualizada enquanto o candidato fala (chega em ~2 s com o Haiku), relógio por bloco, cobertura das competências (sempre com trecho citado), alerta imediato de pergunta proibida, modo foco, marcação (Ctrl+Shift+M), pausa da transcrição, métricas (tempo de fala, perguntas abertas).
 - **Parecer:** evidências a favor e contra por competência com trecho e minuto, nota sugerida editável, pontos do currículo, perguntas pra próxima etapa. Exporta em Markdown e PDF. Sem recomendação de contratar.
 - **Privacidade:** chaves no Credential Manager; tudo no SQLite local; consentimento obrigatório antes de iniciar, com texto pronto; indicador de gravação na bandeja e no título; retenção automática da transcrição; apagar sessão, transcrição ou tudo.
-- **LLM de cada um:** Anthropic (padrão: `claude-opus-5-5`, esforço `low` ao vivo e `high` nas notas) ou qualquer API compatível com OpenAI (OpenAI, Groq, OpenRouter, Ollama, LM Studio).
+- **LLM de cada um:** Anthropic (padrão: `claude-haiku-5-5` ao vivo, pela velocidade, e `claude-opus-5-5` com esforço `high` nas notas) ou qualquer API compatível com OpenAI (OpenAI, Groq, OpenRouter, Ollama, LM Studio).
 
 ## Rodar
 

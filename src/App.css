@@ -179,6 +179,25 @@ body,
   box-shadow: inset 3px 0 0 var(--gray-7), var(--base-card-surface-box-shadow);
 }
 
+/* A pergunta sugerida entra com um fade curto, pra notar a troca sem piscar. */
+.suggestion-text {
+  margin: 0;
+  line-height: var(--line-height-4);
+  animation: suggestion-in 0.35s ease-out;
+}
+
+@keyframes suggestion-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .suggestion-text {
+    animation: none;
+  }
+}
+
 /* Cobertura */
 
 .coverage-dot {

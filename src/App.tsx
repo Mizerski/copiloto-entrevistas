@@ -31,7 +31,7 @@ import {
 import { Consent } from "./Consent";
 import { average, formatClock, formatMs } from "./format";
 import { History } from "./History";
-import { BlockClock, CardList, CoveragePanel, visibleCards } from "./Insights";
+import { BlockClock, CardList, CoveragePanel, SuggestionCard, visibleCards } from "./Insights";
 import { Kits } from "./Kits";
 import { computeMetrics } from "./metrics";
 import { Notes } from "./Notes";
@@ -45,6 +45,7 @@ import {
   type AnalysisEvent,
   type AudioApp,
   type Card as LiveCard,
+  type Suggestion,
   type CaptureEvent,
   type CoverageItem,
   type Kit,
@@ -132,6 +133,7 @@ function App() {
   const [reconnecting, setReconnecting] = useState<Source | null>(null);
   const [coverage, setCoverage] = useState<CoverageItem[]>([]);
   const [cards, setCards] = useState<LiveCard[]>([]);
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const [dismissed, setDismissed] = useState<Set<number>>(new Set());
   const [analysisState, setAnalysisState] = useState<string | null>(null);
   const [marks, setMarks] = useState<Mark[]>([]);
@@ -219,6 +221,7 @@ function App() {
       listen<AnalysisEvent>("analise", ({ payload: e }) => {
         if (e.kind === "coverage") setCoverage(e.items);
         else if (e.kind === "card") setCards((list) => [...list, e.card]);
+        else if (e.kind === "suggestion") setSuggestion(e.suggestion);
         else {
           setAnalysisState(e.state);
           if (e.state === "erro") addLog(`Análise: ${e.message}`);
@@ -282,6 +285,7 @@ function App() {
     setReconnecting(null);
     setCoverage([]);
     setCards([]);
+    setSuggestion(null);
     setDismissed(new Set());
     setAnalysisState(null);
     setMarks([]);
@@ -567,6 +571,10 @@ function App() {
           now={now}
           onChange={(i) => chooseBlock(i)}
         />
+      )}
+
+      {phase === "running" && !!kitId && analyze && (
+        <SuggestionCard suggestion={suggestion} waiting={segments.some((s) => s.source === "sistema")} />
       )}
 
       <CardList cards={shownCards} onDismiss={(id) => setDismissed((d) => new Set(d).add(id))} />

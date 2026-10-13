@@ -266,6 +266,10 @@ fn main() {
                 AnalysisEvent::Card { card } => {
                     println!("    CARD [{}/{}] {}", card.kind, card.priority, card.text)
                 }
+                AnalysisEvent::Suggestion { suggestion: s } => println!(
+                    "    PERGUNTE [{}] {} ({}; {} ms, fala até {})",
+                    s.kind, s.question, s.why, s.latency_ms, s.t_ms
+                ),
                 AnalysisEvent::Coverage { items } => {
                     for c in items.iter().filter(|c| !c.evidence.is_empty()) {
                         println!(
