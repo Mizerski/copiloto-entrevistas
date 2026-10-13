@@ -16,6 +16,18 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ANTHROPIC_FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 const TIMEOUT: Duration = Duration::from_secs(90);
 
+/// Modelos que aceitam o fallback automático em caso de recusa. Os outros (Haiku,
+/// modelos antigos) recusam o parâmetro, então ele só vai pra estes.
+fn supports_fallback(model: &str) -> bool {
+    [
+        "claude-fable-5-1",
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5-5",
+    ]
+    .contains(&model)
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
@@ -161,24 +173,23 @@ impl LlmClient {
         if !self.slot.effort.is_empty() {
             output_config["effort"] = json!(self.slot.effort);
         }
-        let body = json!({
+        let mut body = json!({
             "model": self.slot.model,
             "max_tokens": p.max_tokens,
             "system": system,
             "messages": [{ "role": "user", "content": p.user }],
             "output_config": output_config,
-            "fallbacks": "default",
         });
-        let response = self
+        let mut request = self
             .http
             .post(ANTHROPIC_URL)
             .header("x-api-key", self.api_key.as_deref().unwrap_or_default())
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", ANTHROPIC_FALLBACK_BETA)
-            .json(&body)
-            .send()
-            .await
-            .map_err(network_error)?;
+            .header("anthropic-version", ANTHROPIC_VERSION);
+        if supports_fallback(&self.slot.model) {
+            body["fallbacks"] = json!("default");
+            request = request.header("anthropic-beta", ANTHROPIC_FALLBACK_BETA);
+        }
+        let response = request.json(&body).send().await.map_err(network_error)?;
         let v = read_body(response).await?;
         if v["stop_reason"] == "refusal" {
             return Err("o modelo recusou o pedido".into());

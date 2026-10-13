@@ -1,19 +1,48 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
+import { Button, Code, Flex, Text, TextField } from "@radix-ui/themes";
+import { CheckCircledIcon, CrossCircledIcon, LockClosedIcon } from "@radix-ui/react-icons";
+import { Field, Picker, Section, type Option } from "./ui";
 import type { LlmSettings, LlmUsage, Provider, Slot } from "./types";
 
-const SLOT_LABEL = {
-  live: { title: "Análise ao vivo", hint: "Roda a cada resposta; precisa ser rápido." },
-  notes: { title: "Notas pós-entrevista", hint: "Roda uma vez no fim; pode ser o melhor modelo." },
+const SLOTS = {
+  live: { title: "Análise ao vivo", hint: "Roda a cada resposta do candidato. Velocidade importa mais." },
+  notes: { title: "Notas pós-entrevista", hint: "Roda uma vez no fim. Qualidade importa mais." },
 } as const;
+type SlotName = keyof typeof SLOTS;
 
-const PROVIDER_LABEL: Record<Provider, string> = {
-  anthropic: "Anthropic (Claude)",
-  openai: "Compatível com OpenAI",
-};
+const PROVIDERS: Option[] = [
+  { value: "anthropic", label: "Anthropic (Claude)" },
+  { value: "openai", label: "Compatível com OpenAI" },
+];
 
-type SlotName = keyof typeof SLOT_LABEL;
+const CUSTOM = "__outro__";
+
+const ANTHROPIC_MODELS: Option[] = [
+  { value: "claude-haiku-5-5", label: "Claude Haiku 5.5", detail: "mais rápido e barato" },
+  { value: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", detail: "equilíbrio" },
+  { value: "claude-opus-5-5", label: "Claude Opus 5.5", detail: "melhor qualidade" },
+  { value: CUSTOM, label: "Outro modelo…" },
+];
+
+const EFFORTS: Option[] = [
+  { value: "low", label: "Baixo", detail: "mais rápido" },
+  { value: "medium", label: "Médio" },
+  { value: "high", label: "Alto" },
+  { value: "xhigh", label: "Muito alto" },
+  { value: "max", label: "Máximo", detail: "mais lento" },
+];
+
+/** Endereços conhecidos de APIs compatíveis com OpenAI. */
+const OPENAI_HOSTS: (Option & { url: string; model: string })[] = [
+  { value: "openai", label: "OpenAI", url: "https://api.openai.com/v1", model: "" },
+  { value: "groq", label: "Groq", url: "https://api.groq.com/openai/v1", model: "" },
+  { value: "openrouter", label: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "" },
+  { value: "ollama", label: "Ollama", detail: "local", url: "http://localhost:11434/v1", model: "" },
+  { value: "lmstudio", label: "LM Studio", detail: "local", url: "http://localhost:1234/v1", model: "" },
+  { value: CUSTOM, label: "Outro endereço…", url: "", model: "" },
+];
 
 export function KeyField(props: {
   label: string;
@@ -26,27 +55,33 @@ export function KeyField(props: {
   const [busy, setBusy] = useState(false);
   if (props.mask) {
     return (
-      <div className="row key-row">
-        <span>
-          {props.label}: <code>{props.mask}</code>
-        </span>
-        <button onClick={props.onDelete}>Remover</button>
-      </div>
+      <Field label={props.label}>
+        <Flex align="center" gap="2">
+          <LockClosedIcon />
+          <Code variant="ghost" className="grow">
+            {props.mask}
+          </Code>
+          <Button size="1" variant="soft" color="gray" onClick={props.onDelete}>
+            Remover
+          </Button>
+        </Flex>
+      </Field>
     );
   }
   return (
-    <label>
-      {props.label}
-      <div className="row">
-        <input
+    <Field label={props.label}>
+      <Flex gap="2">
+        <TextField.Root
+          className="grow"
           type="password"
           autoComplete="off"
           placeholder={props.hint ?? "cole a chave aqui"}
           value={value}
           onChange={(e) => setValue(e.target.value)}
         />
-        <button
+        <Button
           disabled={busy || !value.trim()}
+          loading={busy}
           onClick={async () => {
             setBusy(true);
             try {
@@ -57,24 +92,144 @@ export function KeyField(props: {
             }
           }}
         >
-          {busy ? "Testando…" : "Salvar"}
-        </button>
-      </div>
-    </label>
+          Salvar
+        </Button>
+      </Flex>
+    </Field>
   );
 }
+
+function SlotEditor({ name, slot, onChange }: { name: SlotName; slot: Slot; onChange: (s: Slot) => void }) {
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const known = ANTHROPIC_MODELS.some((m) => m.value === slot.model);
+  const [customModel, setCustomModel] = useState(!known && slot.provider === "anthropic");
+  const host = OPENAI_HOSTS.find((h) => h.url === slot.baseUrl)?.value ?? CUSTOM;
+  const update = (patch: Partial<Slot>) => {
+    setResult(null);
+    onChange({ ...slot, ...patch });
+  };
+
+  async function test() {
+    setTesting(true);
+    try {
+      const u = await invoke<LlmUsage>("test_llm", { name });
+      setResult({ ok: true, text: `${u.model} respondeu em ${(u.latencyMs / 1000).toFixed(1)} s` });
+    } catch (e) {
+      setResult({ ok: false, text: String(e) });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <Section title={SLOTS[name].title} description={SLOTS[name].hint}>
+      <Field label="Provedor">
+        <Picker
+          value={slot.provider}
+          options={PROVIDERS}
+          onChange={(v) =>
+            update(
+              v === "anthropic"
+                ? name === "live"
+                  ? { provider: "anthropic", model: "claude-haiku-5-5", effort: "low" }
+                  : { provider: "anthropic", model: "claude-opus-5-5", effort: "high" }
+                : { provider: v as Provider, model: "", baseUrl: OPENAI_HOSTS[0].url },
+            )
+          }
+        />
+      </Field>
+
+      {slot.provider === "anthropic" ? (
+        <>
+          <Field label="Modelo">
+            <Picker
+              value={customModel ? CUSTOM : slot.model}
+              options={ANTHROPIC_MODELS}
+              onChange={(v) => {
+                setCustomModel(v === CUSTOM);
+                if (v !== CUSTOM) update({ model: v });
+              }}
+            />
+            {customModel && (
+              <TextField.Root
+                placeholder="id do modelo, ex.: claude-opus-5"
+                value={slot.model}
+                onChange={(e) => update({ model: e.target.value })}
+              />
+            )}
+          </Field>
+          <Field label="Esforço" hint="Quanto o modelo pensa antes de responder. Menos esforço, resposta mais rápida.">
+            <Picker value={slot.effort || "medium"} options={EFFORTS} onChange={(v) => update({ effort: v })} />
+          </Field>
+        </>
+      ) : (
+        <>
+          <Field label="Serviço">
+            <Picker
+              value={host}
+              options={OPENAI_HOSTS}
+              onChange={(v) => {
+                const h = OPENAI_HOSTS.find((x) => x.value === v)!;
+                update({ baseUrl: h.url, model: h.model || slot.model });
+              }}
+            />
+            {host === CUSTOM && (
+              <TextField.Root
+                placeholder="https://…/v1"
+                value={slot.baseUrl}
+                onChange={(e) => update({ baseUrl: e.target.value })}
+              />
+            )}
+          </Field>
+          <Field label="Modelo" hint="O nome exato que o serviço usa, ex.: llama-3.3-70b-versatile no Groq.">
+            <TextField.Root value={slot.model} onChange={(e) => update({ model: e.target.value })} />
+          </Field>
+        </>
+      )}
+
+      <Flex align="center" gap="3">
+        <Button variant="soft" color="gray" loading={testing} onClick={test}>
+          Testar conexão
+        </Button>
+        {result && (
+          <Flex align="center" gap="1" minWidth="0">
+            {result.ok ? <CheckCircledIcon color="var(--green-11)" /> : <CrossCircledIcon color="var(--red-11)" />}
+            <Text size="1" color={result.ok ? "green" : "red"} className="truncate" title={result.text}>
+              {result.text}
+            </Text>
+          </Flex>
+        )}
+      </Flex>
+    </Section>
+  );
+}
+
+const RETENTION: Option[] = [
+  { value: "0", label: "Nunca" },
+  { value: "7", label: "Depois de 7 dias" },
+  { value: "30", label: "Depois de 30 dias" },
+  { value: "90", label: "Depois de 90 dias" },
+];
 
 export function Settings({ onLog }: { onLog: (line: string) => void }) {
   const [deepgramMask, setDeepgramMask] = useState<string | null>(null);
   const [llm, setLlm] = useState<LlmSettings | null>(null);
-  const [testing, setTesting] = useState<SlotName | null>(null);
-  const [results, setResults] = useState<Partial<Record<SlotName, string>>>({});
   const [retention, setRetention] = useState(0);
 
   async function load() {
     setDeepgramMask(await invoke<string | null>("deepgram_key_status"));
     setLlm(await invoke<LlmSettings>("llm_settings"));
     setRetention(await invoke<number>("retention_days"));
+  }
+
+  useEffect(() => {
+    load().catch((e) => onLog(`Configurações: ${e}`));
+  }, []);
+
+  async function saveSlot(name: SlotName, slot: Slot) {
+    setLlm((prev) => (prev ? { ...prev, [name]: slot } : prev));
+    await invoke("save_llm_slot", { name, slot });
   }
 
   async function changeRetention(days: number) {
@@ -97,33 +252,11 @@ export function Settings({ onLog }: { onLog: (line: string) => void }) {
     }
   }
 
-  useEffect(() => {
-    load().catch((e) => onLog(`Configurações: ${e}`));
-  }, []);
-
-  async function saveSlot(name: SlotName, slot: Slot) {
-    setLlm((prev) => (prev ? { ...prev, [name]: slot } : prev));
-    await invoke("save_llm_slot", { name, slot });
-  }
-
-  async function test(name: SlotName) {
-    setTesting(name);
-    try {
-      const u = await invoke<LlmUsage>("test_llm", { name });
-      setResults((r) => ({ ...r, [name]: `Funcionou: ${u.model}, ${u.latencyMs} ms.` }));
-    } catch (e) {
-      setResults((r) => ({ ...r, [name]: `Falhou: ${e}` }));
-    } finally {
-      setTesting(null);
-    }
-  }
-
   return (
-    <div className="settings">
-      <section>
-        <div className="section-title">Transcrição · Deepgram</div>
+    <Flex direction="column" gap="3">
+      <Section title="Chaves de API" description="Ficam no Credential Manager do Windows; a tela só vê o final.">
         <KeyField
-          label="Chave da Deepgram"
+          label="Deepgram (transcrição)"
           mask={deepgramMask}
           onSave={async (key) => {
             try {
@@ -138,11 +271,6 @@ export function Settings({ onLog }: { onLog: (line: string) => void }) {
             setDeepgramMask(null);
           }}
         />
-        <p className="hint">O áudio das duas pontas vai pra Deepgram pra ser transcrito.</p>
-      </section>
-
-      <section>
-        <div className="section-title">Chaves de LLM</div>
         {llm && (
           <>
             <KeyField
@@ -170,89 +298,35 @@ export function Settings({ onLog }: { onLog: (line: string) => void }) {
                 setLlm({ ...llm, openaiKey: null });
               }}
             />
-            <p className="hint">
-              O texto da conversa (não o áudio) vai pro provedor escolhido. As chaves ficam no Credential
-              Manager do Windows.
-            </p>
           </>
         )}
-      </section>
+        <Text size="1" color="gray">
+          O áudio vai pra Deepgram; o texto da conversa (não o áudio) vai pro provedor de LLM escolhido.
+        </Text>
+      </Section>
 
       {llm &&
-        (Object.keys(SLOT_LABEL) as SlotName[]).map((name) => {
-          const slot = llm[name];
-          const update = (patch: Partial<Slot>) => saveSlot(name, { ...slot, ...patch });
-          return (
-            <section key={name}>
-              <div className="section-title">{SLOT_LABEL[name].title}</div>
-              <p className="hint">{SLOT_LABEL[name].hint}</p>
-              <label>
-                Provedor
-                <select value={slot.provider} onChange={(e) => update({ provider: e.target.value as Provider })}>
-                  {(Object.keys(PROVIDER_LABEL) as Provider[]).map((p) => (
-                    <option key={p} value={p}>
-                      {PROVIDER_LABEL[p]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {slot.provider === "openai" && (
-                <label>
-                  Endereço da API
-                  <input
-                    type="text"
-                    value={slot.baseUrl}
-                    placeholder="https://api.openai.com/v1 · http://localhost:11434/v1"
-                    onChange={(e) => update({ baseUrl: e.target.value })}
-                  />
-                </label>
-              )}
-              <label>
-                Modelo
-                <input type="text" value={slot.model} onChange={(e) => update({ model: e.target.value })} />
-              </label>
-              {slot.provider === "anthropic" && (
-                <label>
-                  Esforço
-                  <select value={slot.effort} onChange={(e) => update({ effort: e.target.value })}>
-                    {["low", "medium", "high", "xhigh", "max"].map((e) => (
-                      <option key={e} value={e}>
-                        {e}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-              <div className="row">
-                <button disabled={testing !== null} onClick={() => test(name)}>
-                  {testing === name ? "Testando…" : "Testar conexão"}
-                </button>
-                <span className="muted small">{results[name]}</span>
-              </div>
-            </section>
-          );
-        })}
-      <section>
-        <div className="section-title">Dados</div>
-        <p className="hint">
-          Tudo fica neste computador. A transcrição é dado pessoal de quem foi entrevistado: guarde só o tempo
-          necessário.
-        </p>
-        <label>
-          Apagar a transcrição de sessões com notas depois de
-          <select value={retention} onChange={(e) => changeRetention(Number(e.target.value))}>
-            <option value={0}>nunca</option>
-            <option value={7}>7 dias</option>
-            <option value={30}>30 dias</option>
-            <option value={90}>90 dias</option>
-          </select>
-        </label>
-        <div className="row">
-          <button className="danger" onClick={deleteEverything}>
+        (Object.keys(SLOTS) as SlotName[]).map((name) => (
+          <SlotEditor key={name} name={name} slot={llm[name]} onChange={(s) => saveSlot(name, s)} />
+        ))}
+
+      <Section
+        title="Dados"
+        description="Tudo fica neste computador. A transcrição é dado pessoal de quem foi entrevistado: guarde só o tempo necessário."
+      >
+        <Field label="Apagar a transcrição de sessões com notas">
+          <Picker
+            value={String(retention)}
+            options={RETENTION}
+            onChange={(v) => changeRetention(Number(v))}
+          />
+        </Field>
+        <Flex>
+          <Button variant="soft" color="red" onClick={deleteEverything}>
             Apagar todas as sessões
-          </button>
-        </div>
-      </section>
-    </div>
+          </Button>
+        </Flex>
+      </Section>
+    </Flex>
   );
 }

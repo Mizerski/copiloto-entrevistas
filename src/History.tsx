@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
+import { Badge, Button, Card, Flex, Heading, Text } from "@radix-ui/themes";
+import { ArrowLeftIcon, TrashIcon } from "@radix-ui/react-icons";
 import { formatClock, formatDate } from "./format";
 import { CardList, CoveragePanel } from "./Insights";
 import { computeMetrics } from "./metrics";
 import { Notes } from "./Notes";
 import { Transcript } from "./Transcript";
+import { Section } from "./ui";
 import type { CoverageItem, SessionFull, SessionSummary } from "./types";
 
 export function History() {
@@ -56,92 +59,124 @@ export function History() {
     const echoes = segments.length - kept.length;
     const coverage: CoverageItem[] = detail.coverageJson ? JSON.parse(detail.coverageJson) : [];
     const m = computeMetrics(segments);
+    const facts = [
+      formatClock(detail.durationMs ?? 0),
+      detail.kitName ?? "sem kit",
+      detail.otherSide ?? "só microfone",
+      `${kept.length} falas`,
+      echoes > 0 ? `${echoes} ecos descartados` : null,
+      m.interviewerShare !== null ? `você falou ${Math.round(m.interviewerShare * 100)}%` : null,
+      `${m.questions} perguntas (${m.openQuestions} abertas)`,
+      usage.calls > 0 ? `${usage.calls} chamadas de LLM` : null,
+    ].filter(Boolean);
     return (
-      <div className="history">
-        <div className="row no-print">
-          <button
+      <Flex direction="column" gap="3">
+        <Flex align="center" gap="2" className="no-print">
+          <Button
+            variant="ghost"
+            color="gray"
             onClick={() => {
               setOpen(null);
               load();
             }}
           >
-            ← Voltar
-          </button>
+            <ArrowLeftIcon /> Voltar
+          </Button>
           <span className="grow" />
-          <button className="danger" onClick={() => remove(detail.id, detail.startedAt)}>
-            Apagar sessão
-          </button>
-        </div>
-        <div className="session-meta">
-          <strong>
-            {detail.candidateName ?? "Candidato sem nome"} · {formatDate(detail.startedAt)}
-          </strong>
-          <span>
-            {formatClock(detail.durationMs ?? 0)} · {detail.kitName ?? "sem kit"} ·{" "}
-            {detail.otherSide ?? "só microfone"}
+          <Button variant="ghost" color="red" onClick={() => remove(detail.id, detail.startedAt)}>
+            <TrashIcon /> Apagar sessão
+          </Button>
+        </Flex>
+        <Flex direction="column" gap="1">
+          <Heading size="4" weight="medium">
+            {detail.candidateName ?? "Candidato sem nome"}
+          </Heading>
+          <Text size="2" color="gray">
+            {formatDate(detail.startedAt)}
             {detail.interrupted ? " · interrompida" : ""}
-          </span>
-          <span>
-            {kept.length} falas
-            {echoes > 0 ? ` · ${echoes} ecos descartados` : ""}
-            {m.interviewerShare !== null ? ` · você falou ${Math.round(m.interviewerShare * 100)}%` : ""}
-            {` · ${m.questions} perguntas (${m.openQuestions} abertas)`}
-            {usage.calls > 0
-              ? ` · ${usage.calls} chamadas de LLM, ${usage.inputTokens + usage.outputTokens} tokens`
-              : ""}
-          </span>
-        </div>
+          </Text>
+          <Text size="1" color="gray">
+            {facts.join(" · ")}
+          </Text>
+        </Flex>
 
         <Notes session={open} onChanged={() => show(detail.id)} />
 
         {coverage.length > 0 && (
-          <section className="no-print">
-            <div className="section-title">Cobertura ao vivo</div>
-            <CoveragePanel items={coverage} />
-          </section>
+          <div className="no-print">
+            <Section title="Cobertura ao vivo">
+              <CoveragePanel items={coverage} />
+            </Section>
+          </div>
         )}
         {cards.length > 0 && (
-          <details className="no-print">
-            <summary>Cards mostrados durante a sessão ({cards.length})</summary>
-            <CardList cards={cards} />
+          <details className="disclosure no-print">
+            <summary>
+              <Text size="2">Cards mostrados durante a sessão ({cards.length})</Text>
+            </summary>
+            <div style={{ marginTop: 8 }}>
+              <CardList cards={cards} />
+            </div>
           </details>
         )}
-        {segments.length > 0 ? (
-          <section className="no-print">
-            <div className="section-title">Transcrição</div>
-            <Transcript segments={kept} marks={marks} />
-          </section>
-        ) : (
-          <p className="muted no-print">A transcrição desta sessão foi apagada; as notas ficaram.</p>
-        )}
-      </div>
+        <div className="no-print">
+          {segments.length > 0 ? (
+            <Section title="Transcrição">
+              <Transcript segments={kept} marks={marks} />
+            </Section>
+          ) : (
+            <Text size="2" color="gray">
+              A transcrição desta sessão foi apagada; as notas ficaram.
+            </Text>
+          )}
+        </div>
+      </Flex>
     );
   }
 
   return (
-    <div className="history">
-      {error && <p className="error">{error}</p>}
-      {sessions.length === 0 ? (
-        <p className="empty">Nenhuma sessão gravada ainda.</p>
-      ) : (
-        <ul className="session-list">
-          {sessions.map((s) => (
-            <li key={s.id}>
-              <button onClick={() => show(s.id)}>
-                <strong>
-                  {s.candidateName ?? "Candidato sem nome"} · {formatDate(s.startedAt)}
-                </strong>
-                <span>
-                  {s.durationMs === null ? "em andamento" : formatClock(s.durationMs)} ·{" "}
-                  {s.kitName ?? "sem kit"} · {s.segments} falas
-                  {s.hasNotes ? " · com notas" : ""}
-                  {s.interrupted ? " · interrompida" : ""}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
+    <Flex direction="column" gap="2">
+      {error && (
+        <Text size="2" color="red">
+          {error}
+        </Text>
       )}
-    </div>
+      {sessions.length === 0 ? (
+        <Text size="2" color="gray">
+          Nenhuma sessão gravada ainda.
+        </Text>
+      ) : (
+        sessions.map((s) => (
+          <Card key={s.id} asChild size="2">
+            <button className="session-item" onClick={() => show(s.id)}>
+              <Flex justify="between" align="center" gap="2">
+                <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
+                  <Text size="2" weight="medium" className="truncate">
+                    {s.candidateName ?? "Candidato sem nome"}
+                  </Text>
+                  <Text size="1" color="gray" className="truncate">
+                    {formatDate(s.startedAt)} ·{" "}
+                    {s.durationMs === null ? "em andamento" : formatClock(s.durationMs)} · {s.kitName ?? "sem kit"} ·{" "}
+                    {s.segments} falas
+                  </Text>
+                </Flex>
+                <Flex gap="1" flexShrink="0">
+                  {s.hasNotes && (
+                    <Badge variant="soft" color="green">
+                      parecer
+                    </Badge>
+                  )}
+                  {s.interrupted && (
+                    <Badge variant="soft" color="amber">
+                      interrompida
+                    </Badge>
+                  )}
+                </Flex>
+              </Flex>
+            </button>
+          </Card>
+        ))
+      )}
+    </Flex>
   );
 }

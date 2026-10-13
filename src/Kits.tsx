@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
+import { Badge, Button, Callout, Flex, Text, TextArea } from "@radix-ui/themes";
+import { DownloadIcon, ExclamationTriangleIcon, PlusIcon, TrashIcon, UploadIcon } from "@radix-ui/react-icons";
+import { Picker, Section } from "./ui";
 import type { Kit, KitRow } from "./types";
+
+const NEW = "__novo__";
 
 const TEMPLATE = `# Nome da vaga
 
@@ -56,15 +61,16 @@ export function Kits({ onChanged }: { onChanged?: () => void }) {
 
   const dirty = markdown !== saved;
 
-  async function choose(id: number | null) {
+  async function choose(value: string) {
     if (dirty && !(await ask("Descartar as alterações não salvas?", { kind: "warning" }))) return;
-    if (id === null) {
+    setMessage(null);
+    if (value === NEW) {
       setSelected(null);
       setMarkdown(TEMPLATE);
       setSaved("");
       return;
     }
-    const kit = kits.find((k) => k.id === id);
+    const kit = kits.find((k) => k.id === Number(value));
     if (kit) {
       setSelected(kit.id);
       setMarkdown(kit.markdown);
@@ -119,58 +125,82 @@ export function Kits({ onChanged }: { onChanged?: () => void }) {
   }
 
   const totalMinutes = parsed?.blocks.reduce((sum, b) => sum + (b.minutes ?? 0), 0) ?? 0;
+  const options = [
+    ...(selected === null ? [{ value: NEW, label: "Novo kit" }] : []),
+    ...kits.map((k) => ({ value: String(k.id), label: k.name })),
+  ];
 
   return (
-    <div className="kits">
-      <div className="row">
-        <select value={selected ?? ""} onChange={(e) => choose(e.target.value ? Number(e.target.value) : null)}>
-          {selected === null && <option value="">Novo kit</option>}
-          {kits.map((k) => (
-            <option key={k.id} value={k.id}>
-              {k.name}
-            </option>
-          ))}
-        </select>
-        <button onClick={() => choose(null)}>Novo</button>
-        <button onClick={importKit}>Importar</button>
-      </div>
+    <Flex direction="column" gap="3">
+      <Flex gap="2">
+        <div className="grow">
+          <Picker value={selected === null ? NEW : String(selected)} options={options} onChange={choose} />
+        </div>
+        <Button variant="soft" color="gray" onClick={() => choose(NEW)}>
+          <PlusIcon /> Novo
+        </Button>
+        <Button variant="soft" color="gray" onClick={importKit}>
+          <UploadIcon /> Importar
+        </Button>
+      </Flex>
 
-      <textarea
+      <TextArea
         className="kit-editor"
+        resize="vertical"
         spellCheck={false}
         value={markdown}
         onChange={(e) => setMarkdown(e.target.value)}
       />
 
       {parsed && (
-        <section className="kit-preview">
-          <strong>{parsed.title || "Sem título"}</strong>
-          <span className="muted">
-            {parsed.competencies.length} competências · {parsed.blocks.length} blocos
-            {totalMinutes ? ` (${totalMinutes} min)` : ""} · {parsed.terms.length} termos ·{" "}
-            {parsed.forbidden.length} perguntas proibidas próprias
-          </span>
+        <Section>
+          <Text size="2" weight="medium">
+            {parsed.title || "Sem título"}
+          </Text>
+          <Flex gap="2" wrap="wrap">
+            <Badge variant="soft" color="gray">
+              {parsed.competencies.length} competências
+            </Badge>
+            <Badge variant="soft" color="gray">
+              {parsed.blocks.length} blocos{totalMinutes ? ` · ${totalMinutes} min` : ""}
+            </Badge>
+            <Badge variant="soft" color="gray">
+              {parsed.terms.length} termos
+            </Badge>
+            <Badge variant="soft" color="gray">
+              {parsed.forbidden.length} perguntas proibidas próprias
+            </Badge>
+          </Flex>
           {parsed.warnings.map((w) => (
-            <span key={w} className="warning">
-              {w}
-            </span>
+            <Callout.Root key={w} size="1" color="amber">
+              <Callout.Icon>
+                <ExclamationTriangleIcon />
+              </Callout.Icon>
+              <Callout.Text>{w}</Callout.Text>
+            </Callout.Root>
           ))}
-        </section>
+        </Section>
       )}
 
-      <div className="row">
-        <button className="primary" disabled={!dirty} onClick={saveKit}>
+      <Flex gap="2" align="center">
+        <Button disabled={!dirty} onClick={saveKit}>
           Salvar
-        </button>
-        <button onClick={exportKit}>Exportar .md</button>
+        </Button>
+        <Button variant="soft" color="gray" onClick={exportKit}>
+          <DownloadIcon /> Exportar .md
+        </Button>
+        {message && (
+          <Text size="1" color="gray">
+            {message}
+          </Text>
+        )}
         <span className="grow" />
         {selected !== null && (
-          <button className="danger" onClick={removeKit}>
-            Apagar
-          </button>
+          <Button variant="ghost" color="red" onClick={removeKit}>
+            <TrashIcon /> Apagar
+          </Button>
         )}
-      </div>
-      {message && <p className="muted">{message}</p>}
-    </div>
+      </Flex>
+    </Flex>
   );
 }

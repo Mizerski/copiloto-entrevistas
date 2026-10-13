@@ -3,22 +3,48 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
+import {
+  Badge,
+  Box,
+  Button,
+  Callout,
+  Card,
+  Flex,
+  IconButton,
+  Progress,
+  ScrollArea,
+  Switch,
+  Tabs,
+  Text,
+  TextArea,
+  TextField,
+  Tooltip,
+} from "@radix-ui/themes";
+import {
+  ExclamationTriangleIcon,
+  PauseIcon,
+  PlayIcon,
+  ReloadIcon,
+  StarIcon,
+  StopIcon,
+} from "@radix-ui/react-icons";
+import { Consent } from "./Consent";
 import { average, formatClock, formatMs } from "./format";
 import { History } from "./History";
 import { BlockClock, CardList, CoveragePanel, visibleCards } from "./Insights";
-import { Consent } from "./Consent";
 import { Kits } from "./Kits";
+import { computeMetrics } from "./metrics";
 import { Notes } from "./Notes";
 import { Onboarding } from "./Onboarding";
-import { computeMetrics } from "./metrics";
 import { Settings } from "./Settings";
 import { insertSegment, Transcript } from "./Transcript";
+import { Field, Picker, Section } from "./ui";
 import {
   SOURCES,
   SOURCE_LABEL,
   type AnalysisEvent,
   type AudioApp,
-  type Card,
+  type Card as LiveCard,
   type CaptureEvent,
   type CoverageItem,
   type Kit,
@@ -37,14 +63,9 @@ import "./App.css";
 type Tab = "sessao" | "historico" | "kits" | "config";
 type Phase = "setup" | "running" | "stopping" | "done";
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "sessao", label: "Sessão" },
-  { id: "historico", label: "Histórico" },
-  { id: "kits", label: "Kits" },
-  { id: "config", label: "Configurações" },
-];
 const LATENCY_WINDOW = 20;
-const REPLAY_OPTION = "__arquivo__";
+const NONE = "__nenhum__";
+const REPLAY = "__arquivo__";
 const EMPTY_TEXT: Record<Source, string> = { mic: "", sistema: "" };
 
 /** RMS linear → 0..100, numa escala de -60 dB a 0 dB. */
@@ -56,6 +77,22 @@ function meterPercent(rms: number) {
 
 function fileName(path: string) {
   return path.split(/[\\/]/).pop() ?? path;
+}
+
+function SwitchRow({ label, checked, onChange, disabled }: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <Text as="label" size="2">
+      <Flex gap="2" align="center">
+        <Switch size="1" checked={checked} disabled={disabled} onCheckedChange={onChange} />
+        {label}
+      </Flex>
+    </Text>
+  );
 }
 
 function App() {
@@ -94,7 +131,7 @@ function App() {
   const [echoes, setEchoes] = useState(0);
   const [reconnecting, setReconnecting] = useState<Source | null>(null);
   const [coverage, setCoverage] = useState<CoverageItem[]>([]);
-  const [cards, setCards] = useState<Card[]>([]);
+  const [cards, setCards] = useState<LiveCard[]>([]);
   const [dismissed, setDismissed] = useState<Set<number>>(new Set());
   const [analysisState, setAnalysisState] = useState<string | null>(null);
   const [marks, setMarks] = useState<Mark[]>([]);
@@ -143,9 +180,6 @@ function App() {
       .then(setOnboarded)
       .catch(() => setOnboarded(true));
 
-    const addMark = (tMs: number, kind: Mark["kind"] = "mark") =>
-      setMarks((list) => [...list, { id: -Date.now(), tMs, kind, note: null }]);
-
     const subscriptions = [
       listen<CaptureEvent>("captura", ({ payload: e }) => {
         if (e.kind === "level") lastLevel.current[e.source] = e.rms;
@@ -191,7 +225,7 @@ function App() {
         }
       }),
       listen<number>("marcacao", ({ payload }) => {
-        addMark(payload);
+        setMarks((list) => [...list, { id: -Date.now(), tMs: payload, kind: "mark", note: null }]);
         addLog(`Momento marcado em ${formatClock(payload)} (Ctrl+Shift+M)`);
       }),
     ];
@@ -215,8 +249,8 @@ function App() {
   const shownCards = visibleCards(cards, dismissed, focus);
 
   async function chooseOtherSide(value: string) {
-    if (value !== REPLAY_OPTION) {
-      setAppPid(value);
+    if (value !== REPLAY) {
+      setAppPid(value === NONE ? "" : value);
       setReplayFile(null);
       return;
     }
@@ -342,9 +376,7 @@ function App() {
     setHidden(value);
   }
 
-  const live = phase !== "setup";
-
-  const providerName = (p: string) => (p === "anthropic" ? "Anthropic" : "o provedor compatível com OpenAI configurado");
+  const providerName = (p: string) => (p === "anthropic" ? "Anthropic" : "o provedor compatível com OpenAI");
   const destinations = [
     deepgramReady
       ? "O áudio das duas pontas vai pra Deepgram, pra ser transcrito. Não é gravado."
@@ -355,168 +387,177 @@ function App() {
     "Transcrição, cobertura e notas ficam só neste computador.",
   ];
 
+  const otherSideOptions = [
+    { value: NONE, label: "Nenhum (só microfone)" },
+    ...apps.map((a) => ({ value: String(a.pid), label: a.name, detail: a.active ? "tocando agora" : undefined })),
+    { value: REPLAY, label: replayFile ? `Replay: ${fileName(replayFile)}` : "Arquivo WAV (replay)…" },
+  ];
+
   const setupView = (
-    <>
+    <Flex direction="column" gap="3">
       {!deepgramReady && (
-        <p className="warning">
-          Sem chave da Deepgram: a sessão só captura áudio.{" "}
-          <button className="link" onClick={() => setTab("config")}>
-            Configurar
-          </button>
-        </p>
+        <Callout.Root color="amber" size="1">
+          <Callout.Icon>
+            <ExclamationTriangleIcon />
+          </Callout.Icon>
+          <Callout.Text>
+            Sem chave da Deepgram, a sessão só captura áudio.{" "}
+            <Button size="1" variant="ghost" onClick={() => setTab("config")}>
+              Configurar
+            </Button>
+          </Callout.Text>
+        </Callout.Root>
       )}
-      <section>
-        <div className="section-title">Entrevista</div>
-        <label>
-          Kit
-          <select value={kitId} onChange={(e) => setKitId(e.target.value)}>
-            <option value="">Sem kit (só transcrição)</option>
-            {kits.map((k) => (
-              <option key={k.id} value={k.id}>
-                {k.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Nome do candidato
-          <input type="text" value={candidateName} onChange={(e) => setCandidateName(e.target.value)} />
-        </label>
-        <label>
-          Currículo (colado)
-          <textarea rows={4} value={candidateResume} onChange={(e) => setCandidateResume(e.target.value)} />
-        </label>
-        <label>
-          Pontos a checar
-          <textarea
+
+      <Section title="Entrevista">
+        <Field label="Kit">
+          <Picker
+            value={kitId || NONE}
+            options={[
+              { value: NONE, label: "Sem kit (só transcrição)" },
+              ...kits.map((k) => ({ value: String(k.id), label: k.name })),
+            ]}
+            onChange={(v) => setKitId(v === NONE ? "" : v)}
+          />
+        </Field>
+        <Field label="Candidato">
+          <TextField.Root
+            placeholder="Nome"
+            value={candidateName}
+            onChange={(e) => setCandidateName(e.target.value)}
+          />
+        </Field>
+        <Field label="Currículo" hint="Cole o texto. Ajuda a apontar contradições e pontos a checar.">
+          <TextArea rows={3} value={candidateResume} onChange={(e) => setCandidateResume(e.target.value)} />
+        </Field>
+        <Field label="Pontos a checar">
+          <TextArea
             rows={2}
             placeholder="gap de 8 meses em 2024; diz que liderou a migração"
             value={candidateCheckpoints}
             onChange={(e) => setCandidateCheckpoints(e.target.value)}
           />
-        </label>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={analyze}
-            disabled={!kitId}
-            onChange={(e) => setAnalyze(e.target.checked)}
-          />
-          Análise ao vivo com LLM (cobertura e sugestões)
-        </label>
-      </section>
+        </Field>
+        <SwitchRow
+          label="Análise ao vivo com LLM (cobertura e sugestões)"
+          checked={analyze && !!kitId}
+          disabled={!kitId}
+          onChange={setAnalyze}
+        />
+      </Section>
 
-      <section>
-        <div className="section-title">Áudio</div>
-        <label>
-          Microfone
-          <select value={micId} onChange={(e) => setMicId(e.target.value)}>
-            {mics.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-                {m.default ? " (padrão)" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Candidato (app da chamada)
-          <div className="row">
-            <select value={replayFile ? REPLAY_OPTION : appPid} onChange={(e) => chooseOtherSide(e.target.value)}>
-              <option value="">Nenhum (só microfone)</option>
-              {apps.map((a) => (
-                <option key={a.pid} value={a.pid}>
-                  {a.name} · {a.pid}
-                  {a.active ? " · tocando" : ""}
-                </option>
-              ))}
-              <option value={REPLAY_OPTION}>
-                {replayFile ? `Replay: ${fileName(replayFile)}` : "Arquivo WAV (replay)…"}
-              </option>
-            </select>
-            <button onClick={refreshDevices}>Atualizar</button>
-          </div>
-        </label>
-        <label>
-          Termos difíceis além dos do kit (vírgula)
-          <input
-            type="text"
-            placeholder="nomes, siglas da empresa"
-            value={keyterms}
-            onChange={(e) => setKeyterms(e.target.value)}
+      <Section title="Áudio">
+        <Field label="Microfone (você)">
+          <Picker
+            value={micId}
+            options={mics.map((m) => ({ value: m.id, label: m.name, detail: m.default ? "padrão" : undefined }))}
+            onChange={setMicId}
           />
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={saveWav} onChange={(e) => setSaveWav(e.target.checked)} />
-          Salvar WAV de debug
-        </label>
-      </section>
+        </Field>
+        <Field label="Candidato (app da chamada)">
+          <Flex gap="2">
+            <Box className="grow" minWidth="0">
+              <Picker
+                value={replayFile ? REPLAY : appPid || NONE}
+                options={otherSideOptions}
+                onChange={chooseOtherSide}
+              />
+            </Box>
+            <Tooltip content="Atualizar a lista de apps">
+              <IconButton variant="soft" color="gray" onClick={refreshDevices} aria-label="Atualizar">
+                <ReloadIcon />
+              </IconButton>
+            </Tooltip>
+          </Flex>
+        </Field>
+        <Field label="Termos difíceis além dos do kit" hint="Separados por vírgula: nomes, siglas da empresa.">
+          <TextField.Root value={keyterms} onChange={(e) => setKeyterms(e.target.value)} />
+        </Field>
+        <SwitchRow label="Salvar WAV de debug" checked={saveWav} onChange={setSaveWav} />
+      </Section>
 
       <Consent checked={consent} onChange={setConsent} destinations={destinations} />
 
-      <button className="primary" disabled={!consent} onClick={start}>
+      <Button size="3" disabled={!consent} onClick={start}>
         Iniciar sessão
-      </button>
-    </>
+      </Button>
+    </Flex>
   );
 
   const liveView = (
-    <>
-      <div className="session-bar">
-        {phase === "running" ? (
-          <span className={`rec ${paused ? "paused" : ""}`}>
-            <span className="dot" /> {formatClock(now - startedAt)}
-          </span>
-        ) : (
-          <span className="muted">{phase === "stopping" ? "Salvando…" : "Sessão salva"}</span>
-        )}
-        <div className="mini-meters">
-          {SOURCES.map((s) => (
-            <div key={s} className="mini-meter" title={SOURCE_LABEL[s]}>
-              <span>{SOURCE_LABEL[s]}</span>
-              <div className="bar">
-                <div style={{ width: `${meterPercent(levels[s])}%` }} />
-              </div>
-            </div>
-          ))}
-        </div>
-        {phase === "running" && (
-          <button className="stop" onClick={stop}>
-            Parar
-          </button>
-        )}
-        {phase === "done" && (
-          <button
-            className="primary"
-            onClick={() => {
-              setPhase("setup");
-              refreshSetup();
-            }}
-          >
-            Nova
-          </button>
-        )}
-      </div>
+    <Flex direction="column" gap="3" className="live">
+      <Card size="1">
+        <Flex align="center" gap="3">
+          {phase === "running" ? (
+            <Badge size="2" color={paused ? "gray" : "red"} variant="soft" className="tabular">
+              <span className={`rec-dot ${paused ? "paused" : ""}`} /> {formatClock(now - startedAt)}
+            </Badge>
+          ) : (
+            <Text size="2" color="gray">
+              {phase === "stopping" ? "Salvando…" : "Sessão salva"}
+            </Text>
+          )}
+          <Flex direction="column" gap="1" className="grow" minWidth="0">
+            {SOURCES.map((s) => (
+              <Flex key={s} align="center" gap="2">
+                <Text size="1" color="gray" className="meter-label">
+                  {SOURCE_LABEL[s]}
+                </Text>
+                <Progress size="1" value={meterPercent(levels[s])} color="green" className="meter" />
+              </Flex>
+            ))}
+          </Flex>
+          {phase === "running" && (
+            <Button color="red" onClick={stop}>
+              <StopIcon /> Parar
+            </Button>
+          )}
+          {phase === "done" && (
+            <Button
+              onClick={() => {
+                setPhase("setup");
+                refreshSetup();
+              }}
+            >
+              Nova sessão
+            </Button>
+          )}
+        </Flex>
+      </Card>
 
       {phase === "running" && (
-        <div className="row actions">
-          <button onClick={markMoment} title="Ctrl+Shift+M funciona com outra janela em foco">
-            ★ Marcar
-          </button>
-          <button onClick={togglePause} className={paused ? "primary" : ""}>
-            {paused ? "▶ Retomar transcrição" : "⏸ Pausar transcrição"}
-          </button>
-          <label className="check">
-            <input type="checkbox" checked={focus} onChange={(e) => setFocus(e.target.checked)} />
-            Foco
-          </label>
+        <Flex align="center" gap="2" wrap="wrap">
+          <Tooltip content="Ctrl+Shift+M funciona com a chamada em primeiro plano">
+            <Button variant="soft" color="gray" onClick={markMoment}>
+              <StarIcon /> Marcar
+            </Button>
+          </Tooltip>
+          <Button variant="soft" color={paused ? "orange" : "gray"} onClick={togglePause}>
+            {paused ? <PlayIcon /> : <PauseIcon />}
+            {paused ? "Retomar" : "Pausar transcrição"}
+          </Button>
+          <Box ml="auto">
+            <SwitchRow label="Foco" checked={focus} onChange={setFocus} />
+          </Box>
+        </Flex>
+      )}
+
+      {phase === "done" && finished && (
+        <div className="print-area">
+          <Notes session={finished} onChanged={loadFinished} />
         </div>
       )}
 
-      {phase === "done" && finished && <Notes session={finished} onChanged={loadFinished} />}
-
-      {paused && <p className="warning">Transcrição pausada: o áudio não está saindo do computador.</p>}
-      {reconnecting && <p className="warning">Reconectando a transcrição ({SOURCE_LABEL[reconnecting]})…</p>}
+      {paused && (
+        <Callout.Root color="gray" size="1">
+          <Callout.Text>Transcrição pausada: o áudio não está saindo do computador.</Callout.Text>
+        </Callout.Root>
+      )}
+      {reconnecting && (
+        <Callout.Root color="amber" size="1">
+          <Callout.Text>Reconectando a transcrição ({SOURCE_LABEL[reconnecting]})…</Callout.Text>
+        </Callout.Root>
+      )}
 
       {kit && kit.blocks.length > 0 && phase === "running" && (
         <BlockClock
@@ -531,48 +572,48 @@ function App() {
       <CardList cards={shownCards} onDismiss={(id) => setDismissed((d) => new Set(d).add(id))} />
 
       {!focus && coverage.length > 0 && (
-        <details className="coverage-box" open>
-          <summary>
-            Cobertura{" "}
-            {analysisState === "analisando" && <span className="muted small">· analisando…</span>}
-          </summary>
+        <Section
+          title="Cobertura"
+          actions={
+            analysisState === "analisando" ? (
+              <Text size="1" color="gray">
+                analisando…
+              </Text>
+            ) : undefined
+          }
+        >
           <CoveragePanel items={coverage} />
-        </details>
+        </Section>
       )}
 
-      <section className="transcript-box">
-        <Transcript segments={segments} partials={partials} marks={marks} follow />
-      </section>
+      <Card size="1" className="transcript-card">
+        <ScrollArea type="auto" scrollbars="vertical" className="transcript-scroll">
+          <Box p="2" pr="4">
+            <Transcript segments={segments} partials={partials} marks={marks} follow />
+          </Box>
+        </ScrollArea>
+      </Card>
 
-      <div className="session-footer">
-        <span>
-          {metrics.interviewerShare !== null
-            ? `Você falou ${Math.round(metrics.interviewerShare * 100)}% · `
-            : ""}
+      <Flex direction="column" gap="2">
+        <Text size="1" color="gray" className="tabular">
+          {metrics.interviewerShare !== null ? `Você falou ${Math.round(metrics.interviewerShare * 100)}% · ` : ""}
           {metrics.questions} perguntas ({metrics.openQuestions} abertas)
-          {metrics.answers.length
-            ? ` · última resposta ${formatClock(metrics.answers[metrics.answers.length - 1])}`
-            : ""}
-        </span>
-        <span>
-          Latência: {SOURCES.map((s) => `${SOURCE_LABEL[s]} ${formatMs(average(latency[s]))}`).join(" · ")}
+          {metrics.answers.length ? ` · última resposta ${formatClock(metrics.answers[metrics.answers.length - 1])}` : ""}
+          {" · latência "}
+          {SOURCES.map((s) => `${SOURCE_LABEL[s].toLowerCase()} ${formatMs(average(latency[s]))}`).join(", ")}
           {echoes > 0 ? ` · ${echoes} ecos descartados` : ""}
-        </span>
-        <label className="check">
-          <input type="checkbox" checked={onTop} onChange={(e) => toggleOnTop(e.target.checked)} />
-          Sempre no topo
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={hidden} onChange={(e) => toggleHidden(e.target.checked)} />
-          Esconder do compartilhamento de tela
-        </label>
-      </div>
-    </>
+        </Text>
+        <Flex gap="4" wrap="wrap">
+          <SwitchRow label="Sempre no topo" checked={onTop} onChange={toggleOnTop} />
+          <SwitchRow label="Esconder do compartilhamento de tela" checked={hidden} onChange={toggleHidden} />
+        </Flex>
+      </Flex>
+    </Flex>
   );
 
   if (onboarded === false) {
     return (
-      <main>
+      <main className="app">
         <Onboarding
           onDone={() => {
             setOnboarded(true);
@@ -585,30 +626,38 @@ function App() {
   }
 
   return (
-    <main>
-      <nav className="tabs">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            className={tab === t.id ? "active" : ""}
-            onClick={() => {
-              setTab(t.id);
-              if (t.id === "sessao" && phase === "setup") refreshSetup();
-            }}
-          >
-            {t.label}
-            {t.id === "sessao" && phase === "running" ? " ●" : ""}
-          </button>
-        ))}
-      </nav>
+    <main className="app">
+      <Tabs.Root
+        value={tab}
+        onValueChange={(v) => {
+          setTab(v as Tab);
+          if (v === "sessao" && phase === "setup") refreshSetup();
+        }}
+      >
+        <Tabs.List size="2" className="no-print">
+          <Tabs.Trigger value="sessao">
+            Sessão
+            {phase === "running" && <span className="rec-dot tab-dot" />}
+          </Tabs.Trigger>
+          <Tabs.Trigger value="historico">Histórico</Tabs.Trigger>
+          <Tabs.Trigger value="kits">Kits</Tabs.Trigger>
+          <Tabs.Trigger value="config">Configurações</Tabs.Trigger>
+        </Tabs.List>
+      </Tabs.Root>
 
-      {tab === "sessao" && (live ? liveView : setupView)}
-      {tab === "historico" && <History />}
-      {tab === "kits" && <Kits onChanged={refreshSetup} />}
-      {tab === "config" && <Settings onLog={addLog} />}
+      <Box className="content">
+        {tab === "sessao" && (phase === "setup" ? setupView : liveView)}
+        {tab === "historico" && <History />}
+        {tab === "kits" && <Kits onChanged={refreshSetup} />}
+        {tab === "config" && <Settings onLog={addLog} />}
+      </Box>
 
-      <details className="log">
-        <summary>Registro</summary>
+      <details className="disclosure log no-print">
+        <summary>
+          <Text size="1" color="gray">
+            Registro
+          </Text>
+        </summary>
         <ol>
           {log.map((line, i) => (
             <li key={i}>{line}</li>

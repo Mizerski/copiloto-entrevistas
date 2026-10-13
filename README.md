@@ -77,4 +77,5 @@ Sem os termos, "Kafka" saiu como "café". Voz sintética é mais limpa que fala 
 - `src-tauri/src/live.rs`: liga captura, transcrição, sessão e análise (app e sonda)
 - `src-tauri/src/db.rs`: SQLite; `src-tauri/src/secrets.rs`: Credential Manager
 - `src-tauri/src/lib.rs`: comandos do Tauri, bandeja, atalho global
+- Interface em [Radix Themes](https://www.radix-ui.com/themes) (cinza "sand", destaque laranja, claro e escuro); `src/ui.tsx` tem as peças de layout.
 - `src/App.tsx`: preparação e sessão ao vivo; `Insights.tsx`, `Transcript.tsx`, `Notes.tsx`, `History.tsx`, `Kits.tsx`, `Settings.tsx`, `Onboarding.tsx`, `Consent.tsx`

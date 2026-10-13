@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ask, save } from "@tauri-apps/plugin-dialog";
+import { Badge, Button, Callout, Flex, Separator, Text, TextArea } from "@radix-ui/themes";
+import { DownloadIcon, FileTextIcon, InfoCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
 import { formatDate } from "./format";
+import { Field, Picker, Section } from "./ui";
 import type { SessionFull } from "./types";
 
 type Evidence = { text: string; quote: string; minute: string };
@@ -28,25 +31,32 @@ export type NotesData = {
 };
 
 const SCORE_LABEL = ["Sem evidência suficiente", "1 · Sinal fraco", "2 · Abaixo do esperado", "3 · Adequado", "4 · Sinal forte"];
-const STATUS_LABEL: Record<string, string> = {
-  confirmado: "Confirmado",
-  contradito: "Contradito",
-  nao_verificado: "Não verificado",
+const SCORE_OPTIONS = SCORE_LABEL.map((label, i) => ({ value: String(i), label }));
+const STATUS: Record<string, { label: string; color: "green" | "red" | "gray" }> = {
+  confirmado: { label: "Confirmado", color: "green" },
+  contradito: { label: "Contradito", color: "red" },
+  nao_verificado: { label: "Não verificado", color: "gray" },
 };
 
-function EvidenceList({ title, items }: { title: string; items: Evidence[] }) {
+function EvidenceList({ title, items, color }: { title: string; items: Evidence[]; color: "green" | "red" }) {
   if (items.length === 0) return null;
   return (
-    <div className="evidence">
-      <span className="evidence-title">{title}</span>
-      <ul>
-        {items.map((e, i) => (
-          <li key={i}>
-            {e.text} <q>{e.quote}</q> <span className="muted">{e.minute}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
+    <Flex direction="column" gap="1">
+      <Text size="1" weight="medium" color={color}>
+        {title}
+      </Text>
+      {items.map((e, i) => (
+        <Text key={i} as="p" size="2">
+          {e.text}{" "}
+          <Text color="gray" className="quote">
+            “{e.quote}”
+          </Text>{" "}
+          <Text size="1" color="gray" className="tabular">
+            {e.minute}
+          </Text>
+        </Text>
+      ))}
+    </Flex>
   );
 }
 
@@ -82,7 +92,7 @@ export function notesToMarkdown(session: SessionFull, n: NotesData) {
   }
   if (n.resumePoints.length) {
     lines.push("## Currículo e pontos a checar", "");
-    n.resumePoints.forEach((p) => lines.push(`- ${STATUS_LABEL[p.status] ?? p.status}: ${p.point}. ${p.comment}`));
+    n.resumePoints.forEach((p) => lines.push(`- ${STATUS[p.status]?.label ?? p.status}: ${p.point}. ${p.comment}`));
     lines.push("");
   }
   if (n.nextQuestions.length) {
@@ -100,10 +110,9 @@ export function notesToMarkdown(session: SessionFull, n: NotesData) {
 }
 
 export function Notes({ session, onChanged }: { session: SessionFull; onChanged: () => void }) {
-  const stored: NotesData | null = session.detail.notesJson ? JSON.parse(session.detail.notesJson) : null;
-  const [notes, setNotes] = useState<NotesData | null>(stored);
+  const [notes, setNotes] = useState<NotesData | null>(null);
   const [dirty, setDirty] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -117,7 +126,7 @@ export function Notes({ session, onChanged }: { session: SessionFull; onChanged:
   async function generate() {
     if (notes && !(await ask("Gerar de novo? As notas e a revisão atuais serão substituídas.", { kind: "warning" })))
       return;
-    setBusy("Gerando notas… numa entrevista longa pode levar um ou dois minutos.");
+    setBusy(true);
     setMessage(null);
     try {
       setNotes(await invoke<NotesData>("generate_notes", { id }));
@@ -126,12 +135,14 @@ export function Notes({ session, onChanged }: { session: SessionFull; onChanged:
     } catch (e) {
       setMessage(`Não gerou: ${e}`);
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
-  function edit(patch: (n: NotesData) => NotesData) {
-    setNotes((n) => (n ? patch(n) : n));
+  function editCompetency(i: number, patch: Partial<CompetencyNotes>) {
+    setNotes((n) =>
+      n ? { ...n, competencies: n.competencies.map((c, j) => (j === i ? { ...c, ...patch } : c)) } : n,
+    );
     setDirty(true);
   }
 
@@ -155,10 +166,10 @@ export function Notes({ session, onChanged }: { session: SessionFull; onChanged:
   }
 
   async function deleteTranscript() {
-    const ok = await ask(
-      "Apagar a transcrição desta sessão? As notas ficam; os trechos citados nelas continuam.",
-      { kind: "warning", okLabel: "Apagar transcrição" },
-    );
+    const ok = await ask("Apagar a transcrição desta sessão? As notas ficam; os trechos citados nelas continuam.", {
+      kind: "warning",
+      okLabel: "Apagar transcrição",
+    });
     if (!ok) return;
     await invoke("delete_transcript", { id });
     onChanged();
@@ -166,132 +177,182 @@ export function Notes({ session, onChanged }: { session: SessionFull; onChanged:
 
   if (!notes) {
     return (
-      <section className="notes">
-        <div className="section-title">Notas pós-entrevista</div>
-        <p className="hint">
-          Evidências por competência, com trecho e minuto, pontos do currículo e perguntas pra próxima etapa. Usa o
-          modelo de notas das Configurações; o texto da transcrição vai pra esse provedor.
-        </p>
-        <button className="primary" disabled={!hasTranscript || busy !== null} onClick={generate}>
-          Gerar notas
-        </button>
-        {busy && <p className="muted">{busy}</p>}
-        {message && <p className="error">{message}</p>}
-      </section>
+      <Section
+        title="Parecer"
+        description="Evidências por competência com trecho e minuto, pontos do currículo e perguntas pra próxima etapa. Usa o modelo de notas das Configurações."
+      >
+        <Flex align="center" gap="3">
+          <Button disabled={!hasTranscript} loading={busy} onClick={generate}>
+            <FileTextIcon /> Gerar parecer
+          </Button>
+          {busy && (
+            <Text size="1" color="gray">
+              Numa entrevista longa leva um ou dois minutos.
+            </Text>
+          )}
+        </Flex>
+        {message && (
+          <Text size="2" color="red">
+            {message}
+          </Text>
+        )}
+      </Section>
     );
   }
 
   return (
-    <section className="notes">
-      <div className="notes-head">
-        <div className="section-title">Parecer</div>
-        <span className={notes.reviewed ? "badge ok" : "badge"}>{notes.reviewed ? "revisado" : "rascunho"}</span>
-      </div>
-      <p className="hint">
+    <Section
+      title="Parecer"
+      actions={
+        <Badge variant="soft" color={notes.reviewed ? "green" : "gray"}>
+          {notes.reviewed ? "revisado" : "rascunho"}
+        </Badge>
+      }
+    >
+      <Text size="1" color="gray">
         Gerado por {notes.model} em {formatDate(notes.generatedAt)}. As notas são sugestões; a avaliação é sua.
-        {notes.droppedQuotes > 0 &&
-          ` ${notes.droppedQuotes} evidência(s) descartada(s) porque o trecho não estava na transcrição.`}
-      </p>
-      {notes.summary && <p>{notes.summary}</p>}
+      </Text>
+      {notes.droppedQuotes > 0 && (
+        <Callout.Root size="1" color="gray">
+          <Callout.Icon>
+            <InfoCircledIcon />
+          </Callout.Icon>
+          <Callout.Text>
+            {notes.droppedQuotes} evidência(s) descartada(s) porque o trecho citado não estava na transcrição.
+          </Callout.Text>
+        </Callout.Root>
+      )}
+      {notes.summary && (
+        <Text as="p" size="2">
+          {notes.summary}
+        </Text>
+      )}
 
       {notes.competencies.map((c, i) => (
-        <div key={c.name} className="competency">
-          <div className="competency-head">
-            <strong>{c.name}</strong>
-            <select
-              className="no-print"
-              value={c.score}
-              onChange={(e) =>
-                edit((n) => ({
-                  ...n,
-                  competencies: n.competencies.map((x, j) => (j === i ? { ...x, score: Number(e.target.value) } : x)),
-                }))
-              }
-            >
-              {SCORE_LABEL.map((label, score) => (
-                <option key={score} value={score}>
-                  {label}
-                </option>
-              ))}
-            </select>
-            <span className="print-only">{SCORE_LABEL[c.score]}</span>
-          </div>
+        <Flex key={c.name} direction="column" gap="2">
+          <Separator size="4" />
+          <Flex align="center" justify="between" gap="2">
+            <Text size="2" weight="medium">
+              {c.name}
+            </Text>
+            <div className="no-print score-picker">
+              <Picker
+                value={String(c.score)}
+                options={SCORE_OPTIONS}
+                onChange={(v) => editCompetency(i, { score: Number(v) })}
+              />
+            </div>
+            <Text size="2" className="print-only">
+              {SCORE_LABEL[c.score]}
+            </Text>
+          </Flex>
           {c.score !== c.suggestedScore && (
-            <span className="muted small">Sugestão do modelo: {SCORE_LABEL[c.suggestedScore]}</span>
+            <Text size="1" color="gray">
+              Sugestão do modelo: {SCORE_LABEL[c.suggestedScore]}
+            </Text>
           )}
-          <EvidenceList title="A favor" items={c.forEvidence} />
-          <EvidenceList title="Contra" items={c.against} />
-          {c.missing && <p className="muted small">Sem evidência: {c.missing}</p>}
-          <textarea
+          <EvidenceList title="A favor" items={c.forEvidence} color="green" />
+          <EvidenceList title="Contra" items={c.against} color="red" />
+          {c.missing && (
+            <Text size="1" color="gray">
+              Sem evidência: {c.missing}
+            </Text>
+          )}
+          <TextArea
             className="no-print"
-            rows={2}
+            size="1"
             placeholder="Seu comentário"
             value={c.comment}
-            onChange={(e) =>
-              edit((n) => ({
-                ...n,
-                competencies: n.competencies.map((x, j) => (j === i ? { ...x, comment: e.target.value } : x)),
-              }))
-            }
+            onChange={(e) => editCompetency(i, { comment: e.target.value })}
           />
-          {c.comment && <p className="print-only">Comentário: {c.comment}</p>}
-        </div>
+          {c.comment && (
+            <Text size="2" className="print-only">
+              Comentário: {c.comment}
+            </Text>
+          )}
+        </Flex>
       ))}
 
       {notes.resumePoints.length > 0 && (
-        <div>
-          <div className="section-title">Currículo e pontos a checar</div>
-          <ul className="plain">
-            {notes.resumePoints.map((p, i) => (
-              <li key={i}>
-                <span className={`badge ${p.status}`}>{STATUS_LABEL[p.status] ?? p.status}</span> {p.point}.{" "}
-                <span className="muted">{p.comment}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
+        <Flex direction="column" gap="2">
+          <Separator size="4" />
+          <Text size="2" weight="medium">
+            Currículo e pontos a checar
+          </Text>
+          {notes.resumePoints.map((p, i) => (
+            <Flex key={i} gap="2" align="start">
+              <Badge variant="soft" color={STATUS[p.status]?.color ?? "gray"} style={{ flexShrink: 0 }}>
+                {STATUS[p.status]?.label ?? p.status}
+              </Badge>
+              <Text size="2">
+                {p.point}.{" "}
+                <Text color="gray" size="2">
+                  {p.comment}
+                </Text>
+              </Text>
+            </Flex>
+          ))}
+        </Flex>
       )}
 
       {notes.nextQuestions.length > 0 && (
-        <div>
-          <div className="section-title">Perguntas pra próxima etapa</div>
+        <Flex direction="column" gap="2">
+          <Separator size="4" />
+          <Text size="2" weight="medium">
+            Perguntas pra próxima etapa
+          </Text>
           <ul className="plain">
             {notes.nextQuestions.map((q, i) => (
-              <li key={i}>{q}</li>
+              <li key={i}>
+                <Text size="2">{q}</Text>
+              </li>
             ))}
           </ul>
-        </div>
+        </Flex>
       )}
 
-      <label>
-        Suas anotações
-        <textarea
+      <Separator size="4" />
+      <Field label="Suas anotações">
+        <TextArea
           className="no-print"
-          rows={3}
           value={notes.interviewerNotes}
-          onChange={(e) => edit((n) => ({ ...n, interviewerNotes: e.target.value }))}
+          onChange={(e) => {
+            setNotes({ ...notes, interviewerNotes: e.target.value });
+            setDirty(true);
+          }}
         />
-      </label>
-      {notes.interviewerNotes && <p className="print-only">{notes.interviewerNotes}</p>}
-
-      <div className="row wrap no-print">
-        <button className="primary" disabled={!dirty && notes.reviewed} onClick={saveReview}>
-          Salvar revisão
-        </button>
-        <button onClick={exportMarkdown}>Exportar .md</button>
-        <button onClick={() => window.print()}>Imprimir / PDF</button>
-        <span className="grow" />
-        <button disabled={!hasTranscript || busy !== null} onClick={generate}>
-          Gerar de novo
-        </button>
-        {hasTranscript && (
-          <button className="danger" onClick={deleteTranscript}>
-            Apagar transcrição
-          </button>
+        {notes.interviewerNotes && (
+          <Text size="2" className="print-only">
+            {notes.interviewerNotes}
+          </Text>
         )}
-      </div>
-      {busy && <p className="muted no-print">{busy}</p>}
-      {message && <p className="muted no-print">{message}</p>}
-    </section>
+      </Field>
+
+      <Flex gap="2" wrap="wrap" align="center" className="no-print">
+        <Button disabled={!dirty && notes.reviewed} onClick={saveReview}>
+          Salvar revisão
+        </Button>
+        <Button variant="soft" color="gray" onClick={exportMarkdown}>
+          <DownloadIcon /> .md
+        </Button>
+        <Button variant="soft" color="gray" onClick={() => window.print()}>
+          Imprimir / PDF
+        </Button>
+        <span className="grow" />
+        <Button variant="ghost" color="gray" disabled={!hasTranscript} loading={busy} onClick={generate}>
+          <ReloadIcon /> Gerar de novo
+        </Button>
+        {hasTranscript && (
+          <Button variant="ghost" color="red" onClick={deleteTranscript}>
+            <TrashIcon /> Apagar transcrição
+          </Button>
+        )}
+      </Flex>
+      {message && (
+        <Text size="1" color="gray" className="no-print">
+          {message}
+        </Text>
+      )}
+    </Section>
   );
 }
