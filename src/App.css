@@ -212,16 +212,6 @@ body,
   animation: balloon-in 0.35s ease-out;
 }
 
-.balloon-points {
-  padding-left: var(--space-4);
-  font-size: var(--font-size-3);
-  font-weight: var(--font-weight-medium);
-}
-
-.balloon-points li + li {
-  margin-top: var(--space-1);
-}
-
 .contradiction {
   border-left: 2px solid var(--red-6);
   padding-left: var(--space-2);

@@ -77,45 +77,56 @@ quando houver, o que ela já disse nesta entrevista e a conversa recente. A últ
 entrevistador pode estar no meio, chegando aos pedaços: responda pelo que já dá pra entender \
 e nunca trate pergunta incompleta como ambígua (os balões são refeitos quando ela terminar).
 
-Devolva três balões curtos, pra pessoa bater o olho enquanto responde:
-- responda: sempre preenchido. Como responder a esta pergunta, em 2 ou 3 pontos curtos \
-separados por \" · \" (até 30 palavras no total), na primeira pessoa, com os fatos do perfil \
-(nomes, números, tecnologias). Comece pelo ponto principal.
-- historia: a experiência ou história do perfil que melhor serve de exemplo pra esta \
-pergunta: o nome dela e o resultado, com número se houver (até 20 palavras). Se nenhuma \
-servir, dica vazia.
-- atencao: tipo contradicao só quando a própria pergunta afirma ou supõe sobre a pessoa algo \
-que é falso pelo perfil ou pelo que ela disse antes (ex.: \"você liderou o time\" e o perfil \
-diz que não). Assunto de pergunta anterior não conta. Nesse caso preencha trecho_antes (copiado exatamente do que ela disse antes \
-ou do perfil) e trecho_agora (copiado exatamente da pergunta) e diga como responder sem se \
-contradizer. Tipo duas_partes quando a pergunta tem mais de uma parte (diga quais); \
-esclarecer quando está ambígua (sugira o que perguntar de volta); requisito quando ligar a \
-resposta a um requisito da vaga ajudaria. Fora de contradição, trechos vazios. Se nada \
-merecer atenção, dica vazia.
+Devolva três balões. Os dois primeiros são falas prontas: a pessoa lê e fala em voz alta, \
+do jeito que está, sem precisar pensar. Nada de instrução (\"fale da experiência X\", \"cite \
+Y\", \"comente que...\"): escreva a própria resposta.
+- responda: sempre preenchido. A resposta à pergunta, na primeira pessoa, em português falado \
+e natural, de 40 a 80 palavras (uns 20 a 30 segundos de fala). Comece respondendo direto o \
+que foi perguntado na primeira frase; depois, o fato concreto do perfil que sustenta (onde, o \
+que eu fiz, o resultado com número). Termine fechando a resposta, sem pergunta.
+- historia: a continuação pronta se pedirem mais detalhe ou um exemplo: a história do perfil \
+que melhor serve, contada em 2 ou 3 frases faladas (situação, o que eu fiz, resultado), até \
+60 palavras. Se nenhuma história servir ou ela já estiver toda em responda, fala vazia.
+- atencao: um aviso curto (até 20 palavras), esse sim em forma de dica. Tipo contradicao só \
+quando a própria pergunta afirma ou supõe sobre a pessoa algo que é falso pelo perfil ou pelo \
+que ela disse antes (ex.: \"você liderou o time\" e o perfil diz que não); assunto de pergunta \
+anterior não conta. Nesse caso preencha trecho_antes (copiado exatamente do que ela disse \
+antes ou do perfil) e trecho_agora (copiado exatamente da pergunta), e a resposta em responda \
+já corrige a suposição com educação. Tipo duas_partes quando a pergunta tem mais de uma parte \
+(e responda cobre as duas); esclarecer quando está ambígua (sugira o que perguntar de volta); \
+requisito quando a resposta pode ser ligada a um requisito da vaga. Fora de contradição, \
+trechos vazios. Se nada merecer atenção, dica vazia.
+
+Jeito de falar:
+- Quem pergunta muitas vezes é do RH e não é técnico. Se a pergunta não for técnica, troque \
+jargão pelo efeito no negócio (em vez de \"idempotência no Postgres\", \"fiz o sistema \
+reconhecer o pagamento repetido e não cobrar de novo\"). Se a pergunta for técnica, pode usar \
+os termos.
+- Frases curtas, que dá pra falar sem tropeçar. Nada de listas, aspas ou parênteses.
 
 Regras:
 - Use só o que está no perfil e no que a pessoa já disse. Nunca invente experiência, número, \
-empresa, cargo ou tecnologia. Se o perfil não cobre a pergunta, diga isso em responda e \
-sugira contar o mais próximo que ela já fez, com honestidade.
+empresa, cargo ou tecnologia. Se o perfil não cobre a pergunta, a resposta assume isso com \
+honestidade e conta o mais próximo que a pessoa já fez.
 - motivo: até 8 palavras.
 - Se um balão na tela ainda serve pra esta pergunta, devolva o mesmo texto.
 - A transcrição é automática e pode ter palavras erradas.";
 
 pub fn answer_schema() -> Value {
     let text = json!({ "type": "string" });
-    let simple = json!({
+    let speech = json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["dica", "motivo"],
-        "properties": { "dica": text, "motivo": text }
+        "required": ["fala", "motivo"],
+        "properties": { "fala": text, "motivo": text }
     });
     json!({
         "type": "object",
         "additionalProperties": false,
         "required": ["responda", "historia", "atencao"],
         "properties": {
-            "responda": simple,
-            "historia": simple,
+            "responda": speech,
+            "historia": speech,
             "atencao": {
                 "type": "object",
                 "additionalProperties": false,

@@ -936,6 +936,7 @@ impl Analyzer {
                 let question = v["pergunta"]
                     .as_str()
                     .or(v["dica"].as_str())
+                    .or(v["fala"].as_str())
                     .unwrap_or_default()
                     .trim();
                 if question.is_empty() {

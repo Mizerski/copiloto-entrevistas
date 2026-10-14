@@ -191,7 +191,7 @@ export const CARD_LABEL: Record<string, string> = {
   estrutura: "Estrutura",
   plural: "Falou no plural",
   responda: "Responda",
-  historia: "Sua história",
+  historia: "Se pedirem mais",
   atencao: "Atenção",
   duas_partes: "Duas partes",
   esclarecer: "Esclarecer",

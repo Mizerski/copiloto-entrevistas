@@ -89,7 +89,7 @@ export const INTERVIEW_SLOTS: SlotConfig[] = [
 /** Modo candidato: o que responder ao entrevistador, tirado do seu perfil. */
 export const CANDIDATE_SLOTS: SlotConfig[] = [
   { slot: "responda", label: "Responda", color: "orange" },
-  { slot: "historia", label: "Sua história", color: "blue" },
+  { slot: "historia", label: "Se pedirem mais", color: "blue" },
   { slot: "atencao", label: "Atenção", color: "red" },
 ];
 
@@ -158,18 +158,16 @@ export function Balloons({ suggestions, waiting, onUse, slots = INTERVIEW_SLOTS 
                 {formatClock(s.tMs)}
               </Text>
             </Flex>
-            {s.slot === "responda" ? (
-              // Os pontos da resposta, um por linha.
-              <ul key={s.id} className="balloon-text balloon-points">
-                {s.question.split(" · ").map((point) => (
-                  <li key={point}>{point}</li>
-                ))}
-              </ul>
-            ) : (
-              <Text as="p" size="3" weight="medium" key={s.id} className="balloon-text">
-                {s.question}
-              </Text>
-            )}
+            {/* No modo candidato, a continuação é texto pra ler em voz alta, sem peso. */}
+            <Text
+              as="p"
+              size="3"
+              weight={s.slot === "historia" ? "regular" : "medium"}
+              key={s.id}
+              className="balloon-text"
+            >
+              {s.question}
+            </Text>
             {s.earlier && s.now && (
               <Flex direction="column" gap="1" mt="2" className="contradiction">
                 <Text size="1" color="gray">
