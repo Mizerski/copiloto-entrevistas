@@ -13,6 +13,7 @@ import {
   IconButton,
   Progress,
   ScrollArea,
+  SegmentedControl,
   Switch,
   Tabs,
   Text,
@@ -31,7 +32,7 @@ import {
 import { Consent } from "./Consent";
 import { average, formatClock, formatMs } from "./format";
 import { History } from "./History";
-import { Balloons, BlockClock, CardList, CoveragePanel, visibleCards } from "./Insights";
+import { Balloons, BlockClock, CardList, CoveragePanel, PRACTICE_SLOTS, visibleCards } from "./Insights";
 import { Kits } from "./Kits";
 import { computeMetrics } from "./metrics";
 import { Notes } from "./Notes";
@@ -39,10 +40,13 @@ import { Onboarding } from "./Onboarding";
 import { Settings } from "./Settings";
 import { insertSegment, Transcript } from "./Transcript";
 import { Field, Picker, Section } from "./ui";
+import { speak, stopSpeaking } from "./voice";
 import {
+  PRACTICE_LABEL,
   SOURCES,
   SOURCE_LABEL,
   type AnalysisEvent,
+  type Persona,
   type AudioApp,
   type Card as LiveCard,
   type BalloonSlot,
@@ -64,6 +68,9 @@ import "./App.css";
 
 type Tab = "sessao" | "historico" | "kits" | "config";
 type Phase = "setup" | "running" | "stopping" | "done";
+type Mode = "entrevista" | "treino";
+/** O entrevistador simulado: pensando, falando, esperando você ou já se despediu. */
+type Interviewer = { state: "thinking" | "speaking" | "waiting" | "ended"; text: string };
 
 const LATENCY_WINDOW = 20;
 const NONE = "__nenhum__";
@@ -119,6 +126,9 @@ function App() {
   const [llm, setLlm] = useState<LlmSettings | null>(null);
   const [consent, setConsent] = useState(false);
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
+  const [mode, setMode] = useState<Mode>("entrevista");
+  const [personas, setPersonas] = useState<Persona[]>([]);
+  const [personaId, setPersonaId] = useState("tecnica");
 
   // Sessão
   const [startedAt, setStartedAt] = useState(0);
@@ -144,6 +154,9 @@ function App() {
   const [paused, setPaused] = useState(false);
   const [onTop, setOnTop] = useState(false);
   const [hidden, setHidden] = useState(false);
+  // Treino
+  const [practicing, setPracticing] = useState(false);
+  const [interviewer, setInterviewer] = useState<Interviewer | null>(null);
 
   const [log, setLog] = useState<string[]>([]);
   const lastLevel = useRef<Record<Source, number>>({ mic: 0, sistema: 0 });
@@ -169,6 +182,7 @@ function App() {
   async function refreshSetup() {
     try {
       setKits(await invoke<KitRow[]>("list_kits"));
+      setPersonas(await invoke<Persona[]>("list_personas"));
       setDeepgramReady((await invoke<string | null>("deepgram_key_status")) !== null);
       setLlm(await invoke<LlmSettings>("llm_settings"));
     } catch (e) {
@@ -224,7 +238,9 @@ function App() {
         else if (e.kind === "card") setCards((list) => [...list, e.card]);
         else if (e.kind === "suggestion") setSuggestions((m) => ({ ...m, [e.suggestion.slot]: e.suggestion }));
         else if (e.kind === "suggestionUsed") setSuggestions((m) => dropSuggestion(m, e.id));
-        else {
+        else if (e.kind === "interviewerThinking") setInterviewer((i) => ({ state: "thinking", text: i?.text ?? "" }));
+        else if (e.kind === "interviewerSays") interviewerSays(e.text, e.end);
+        else if (e.kind === "status") {
           setAnalysisState(e.state);
           if (e.state === "erro") addLog(`Análise: ${e.message}`);
         }
@@ -249,6 +265,26 @@ function App() {
       clearInterval(clock);
     };
   }, []);
+
+  /** Lê a fala do entrevistador com o microfone mudo e devolve pra transcrição. */
+  async function interviewerSays(text: string, end: boolean) {
+    setInterviewer({ state: "speaking", text });
+    await invoke("set_mic_muted", { muted: true }).catch(() => {});
+    const durationMs = await speak(text);
+    await invoke("practice_spoken", { text, durationMs }).catch(() => {});
+    await invoke("set_mic_muted", { muted: false }).catch(() => {});
+    setInterviewer({ state: end ? "ended" : "waiting", text });
+  }
+
+  async function repeatInterviewer() {
+    if (!interviewer?.text) return;
+    const previous = interviewer.state;
+    setInterviewer({ ...interviewer, state: "speaking" });
+    await invoke("set_mic_muted", { muted: true }).catch(() => {});
+    await speak(interviewer.text);
+    await invoke("set_mic_muted", { muted: false }).catch(() => {});
+    setInterviewer({ ...interviewer, state: previous });
+  }
 
   const metrics = useMemo(() => computeMetrics(segments), [segments]);
   const shownCards = visibleCards(cards, dismissed, focus);
@@ -292,6 +328,9 @@ function App() {
     setAnalysisState(null);
     setMarks([]);
     setPaused(false);
+    setInterviewer(null);
+    const practice = mode === "treino";
+    setPracticing(practice);
     try {
       const started = await invoke<{
         sessionId: number;
@@ -301,9 +340,11 @@ function App() {
       }>("start_session", {
         request: {
           micId: micId || null,
-          appPid: appPid ? Number(appPid) : null,
-          replayFile,
-          otherSideLabel: otherSideLabel(),
+          appPid: practice || !appPid ? null : Number(appPid),
+          replayFile: practice ? null : replayFile,
+          otherSideLabel: practice
+            ? `treino: ${personas.find((p) => p.id === personaId)?.name ?? personaId}`
+            : otherSideLabel(),
           saveWav,
           transcribe: deepgramReady,
           keyterms: keyterms.split(",").map((t) => t.trim()).filter(Boolean),
@@ -311,7 +352,8 @@ function App() {
           candidateName,
           candidateResume,
           candidateCheckpoints,
-          analyze,
+          analyze: practice || analyze,
+          practice: practice ? personaId : null,
         },
       });
       setSessionId(started.sessionId);
@@ -332,6 +374,7 @@ function App() {
   }
 
   async function stop() {
+    stopSpeaking();
     setPhase("stopping");
     await invoke("stop_session");
     getCurrentWindow().setTitle("Copiloto").catch(() => {});
@@ -399,8 +442,17 @@ function App() {
     { value: REPLAY, label: replayFile ? `Replay: ${fileName(replayFile)}` : "Arquivo WAV (replay)…" },
   ];
 
+  const practice = mode === "treino";
+  const practiceBlocked = !kitId ? "Escolha um kit: o entrevistador segue o roteiro dele." : null;
+  const labels = practicing ? PRACTICE_LABEL : SOURCE_LABEL;
+
   const setupView = (
     <Flex direction="column" gap="3">
+      <SegmentedControl.Root value={mode} onValueChange={(v) => setMode(v as Mode)}>
+        <SegmentedControl.Item value="entrevista">Entrevista real</SegmentedControl.Item>
+        <SegmentedControl.Item value="treino">Treino</SegmentedControl.Item>
+      </SegmentedControl.Root>
+
       {!deepgramReady && (
         <Callout.Root color="amber" size="1">
           <Callout.Icon>
@@ -415,7 +467,23 @@ function App() {
         </Callout.Root>
       )}
 
-      <Section title="Entrevista">
+      {practice && (
+        <Section title="Entrevistador">
+          <Field label="Persona" hint={personas.find((p) => p.id === personaId)?.description}>
+            <Picker
+              value={personaId}
+              options={personas.map((p) => ({ value: p.id, label: p.name }))}
+              onChange={setPersonaId}
+            />
+          </Field>
+          <Text size="1" color="gray">
+            Uma IA faz o papel de entrevistador e fala com a voz do Windows. Você responde no microfone; os
+            balões dão dicas enquanto você fala e, no fim, sai um parecer sobre você. Use fone se puder.
+          </Text>
+        </Section>
+      )}
+
+      <Section title={practice ? "Vaga e você" : "Entrevista"}>
         <Field label="Kit">
           <Picker
             value={kitId || NONE}
@@ -426,16 +494,24 @@ function App() {
             onChange={(v) => setKitId(v === NONE ? "" : v)}
           />
         </Field>
-        <Field label="Candidato">
+        <Field label={practice ? "Seu nome" : "Candidato"}>
           <TextField.Root
             placeholder="Nome"
             value={candidateName}
             onChange={(e) => setCandidateName(e.target.value)}
           />
         </Field>
-        <Field label="Currículo" hint="Cole o texto. Ajuda a apontar contradições e pontos a checar.">
+        <Field
+          label={practice ? "Seu currículo" : "Currículo"}
+          hint={
+            practice
+              ? "O entrevistador pergunta sobre ele, e os balões avisam se você se contradisser."
+              : "Cole o texto. Ajuda a apontar contradições e pontos a checar."
+          }
+        >
           <TextArea rows={3} value={candidateResume} onChange={(e) => setCandidateResume(e.target.value)} />
         </Field>
+        {!practice && (
         <Field label="Pontos a checar">
           <TextArea
             rows={2}
@@ -444,12 +520,15 @@ function App() {
             onChange={(e) => setCandidateCheckpoints(e.target.value)}
           />
         </Field>
-        <SwitchRow
-          label="Análise ao vivo com LLM (cobertura e sugestões)"
-          checked={analyze && !!kitId}
-          disabled={!kitId}
-          onChange={setAnalyze}
-        />
+        )}
+        {!practice && (
+          <SwitchRow
+            label="Análise ao vivo com LLM (cobertura e sugestões)"
+            checked={analyze && !!kitId}
+            disabled={!kitId}
+            onChange={setAnalyze}
+          />
+        )}
       </Section>
 
       <Section title="Áudio">
@@ -460,6 +539,7 @@ function App() {
             onChange={setMicId}
           />
         </Field>
+        {!practice && (
         <Field label="Candidato (app da chamada)">
           <Flex gap="2">
             <Box className="grow" minWidth="0">
@@ -476,17 +556,39 @@ function App() {
             </Tooltip>
           </Flex>
         </Field>
+        )}
         <Field label="Termos difíceis além dos do kit" hint="Separados por vírgula: nomes, siglas da empresa.">
           <TextField.Root value={keyterms} onChange={(e) => setKeyterms(e.target.value)} />
         </Field>
         <SwitchRow label="Salvar WAV de debug" checked={saveWav} onChange={setSaveWav} />
       </Section>
 
-      <Consent checked={consent} onChange={setConsent} destinations={destinations} />
-
-      <Button size="3" disabled={!consent} onClick={start}>
-        Iniciar sessão
-      </Button>
+      {practice ? (
+        <>
+          <Callout.Root color="gray" size="1">
+            <Callout.Text>
+              Sua voz vai pra Deepgram, pra ser transcrita, e o texto vai pra{" "}
+              {llm ? `${providerName(llm.live.provider)} (${llm.live.model})` : "LLM configurada"}. Tudo fica salvo só
+              neste computador.
+            </Callout.Text>
+          </Callout.Root>
+          {practiceBlocked && (
+            <Text size="1" color="gray">
+              {practiceBlocked}
+            </Text>
+          )}
+          <Button size="3" disabled={!!practiceBlocked || !deepgramReady} onClick={start}>
+            Começar treino
+          </Button>
+        </>
+      ) : (
+        <>
+          <Consent checked={consent} onChange={setConsent} destinations={destinations} />
+          <Button size="3" disabled={!consent} onClick={start}>
+            Iniciar sessão
+          </Button>
+        </>
+      )}
     </Flex>
   );
 
@@ -504,10 +606,10 @@ function App() {
             </Text>
           )}
           <Flex direction="column" gap="1" className="grow" minWidth="0">
-            {SOURCES.map((s) => (
+            {SOURCES.filter((s) => !practicing || s === "mic").map((s) => (
               <Flex key={s} align="center" gap="2">
                 <Text size="1" color="gray" className="meter-label">
-                  {SOURCE_LABEL[s]}
+                  {labels[s]}
                 </Text>
                 <Progress size="1" value={meterPercent(levels[s])} color="green" className="meter" />
               </Flex>
@@ -575,10 +677,61 @@ function App() {
         />
       )}
 
-      {phase === "running" && !!kitId && analyze && (
+      {phase === "running" && practicing && interviewer && (
+        <Card size="2" className="interviewer-card">
+          <Flex align="center" gap="2" mb="1">
+            <Text size="1" weight="medium" color="blue">
+              Entrevistador · {personas.find((p) => p.id === personaId)?.name}
+            </Text>
+            <Text size="1" color="gray" ml="auto">
+              {
+                {
+                  thinking: "pensando…",
+                  speaking: "falando…",
+                  waiting: "sua vez",
+                  ended: "encerrou",
+                }[interviewer.state]
+              }
+            </Text>
+          </Flex>
+          {interviewer.text && (
+            <Text as="p" size="3" className={interviewer.state === "thinking" ? "interviewer-old" : undefined}>
+              {interviewer.text}
+            </Text>
+          )}
+          <Flex gap="2" mt="2">
+            <Button
+              size="1"
+              variant="soft"
+              color="gray"
+              disabled={!interviewer.text || interviewer.state === "speaking"}
+              onClick={repeatInterviewer}
+            >
+              Repetir
+            </Button>
+            <Button
+              size="1"
+              variant="soft"
+              color="gray"
+              disabled={interviewer.state !== "waiting"}
+              onClick={() => invoke("practice_next").catch((e) => addLog(`Treino: ${e}`))}
+            >
+              Próxima pergunta
+            </Button>
+          </Flex>
+        </Card>
+      )}
+      {phase === "running" && practicing && interviewer?.state === "ended" && (
+        <Callout.Root color="blue" size="1">
+          <Callout.Text>O entrevistador encerrou. Clique em Parar pra ver o seu parecer.</Callout.Text>
+        </Callout.Root>
+      )}
+
+      {phase === "running" && (practicing || (!!kitId && analyze)) && (
         <Balloons
+          slots={practicing ? PRACTICE_SLOTS : undefined}
           suggestions={suggestions}
-          waiting={segments.some((s) => s.source === "sistema")}
+          waiting={segments.some((s) => s.source === (practicing ? "mic" : "sistema"))}
           onUse={(s) => {
             setSuggestions((m) => dropSuggestion(m, s.id));
             invoke("use_suggestion", { id: s.id }).catch(() => {});
@@ -606,20 +759,26 @@ function App() {
       <Card size="1" className="transcript-card">
         <ScrollArea type="auto" scrollbars="vertical" className="transcript-scroll">
           <Box p="2" pr="4">
-            <Transcript segments={segments} partials={partials} marks={marks} follow />
+            <Transcript segments={segments} partials={partials} marks={marks} follow labels={labels} />
           </Box>
         </ScrollArea>
       </Card>
 
       <Flex direction="column" gap="2">
-        <Text size="1" color="gray" className="tabular">
-          {metrics.interviewerShare !== null ? `Você falou ${Math.round(metrics.interviewerShare * 100)}% · ` : ""}
-          {metrics.questions} perguntas ({metrics.openQuestions} abertas)
-          {metrics.answers.length ? ` · última resposta ${formatClock(metrics.answers[metrics.answers.length - 1])}` : ""}
-          {" · latência "}
-          {SOURCES.map((s) => `${SOURCE_LABEL[s].toLowerCase()} ${formatMs(average(latency[s]))}`).join(", ")}
-          {echoes > 0 ? ` · ${echoes} ecos descartados` : ""}
-        </Text>
+        {practicing ? (
+          <Text size="1" color="gray" className="tabular">
+            latência da sua transcrição {formatMs(average(latency.mic))}
+          </Text>
+        ) : (
+          <Text size="1" color="gray" className="tabular">
+            {metrics.interviewerShare !== null ? `Você falou ${Math.round(metrics.interviewerShare * 100)}% · ` : ""}
+            {metrics.questions} perguntas ({metrics.openQuestions} abertas)
+            {metrics.answers.length ? ` · última resposta ${formatClock(metrics.answers[metrics.answers.length - 1])}` : ""}
+            {" · latência "}
+            {SOURCES.map((s) => `${SOURCE_LABEL[s].toLowerCase()} ${formatMs(average(latency[s]))}`).join(", ")}
+            {echoes > 0 ? ` · ${echoes} ecos descartados` : ""}
+          </Text>
+        )}
         <Flex gap="4" wrap="wrap">
           <SwitchRow label="Sempre no topo" checked={onTop} onChange={toggleOnTop} />
           <SwitchRow label="Esconder do compartilhamento de tela" checked={hidden} onChange={toggleHidden} />

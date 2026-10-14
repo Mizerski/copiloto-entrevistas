@@ -8,7 +8,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::analysis::quote_in;
+use crate::analysis::quote_in_text;
 use crate::audio::Source;
 use crate::db::{Db, now_unix_ms};
 use crate::kit::{self, fold};
@@ -125,7 +125,18 @@ pub async fn generate(db: &Arc<Db>, llm: &LlmClient, session_id: i64) -> Result<
         }
     }
 
-    let transcript = transcript_text(&segments, &marks);
+    // No treino, quem respondeu foi o microfone.
+    let candidate = if detail.practice_persona.is_some() {
+        Source::Mic
+    } else {
+        Source::Sistema
+    };
+    let transcript = transcript_text(&segments, &marks, candidate);
+    let system = if detail.practice_persona.is_some() {
+        format!("{SYSTEM}{}", crate::practice::NOTES_NOTE)
+    } else {
+        SYSTEM.to_string()
+    };
 
     let names: Vec<String> = if kit.competencies.is_empty() {
         vec![
@@ -138,7 +149,7 @@ pub async fn generate(db: &Arc<Db>, llm: &LlmClient, session_id: i64) -> Result<
     };
     let schema = schema(&names);
     let prompt = Prompt {
-        system: SYSTEM,
+        system: &system,
         stable_context: &stable,
         user: &transcript,
         schema: &schema,
@@ -147,13 +158,13 @@ pub async fn generate(db: &Arc<Db>, llm: &LlmClient, session_id: i64) -> Result<
     let (value, usage) = llm.complete_json(&prompt).await?;
     let _ = db.insert_usage(session_id, "notas", &usage);
 
-    let corpus = fold(
-        &segments
-            .iter()
-            .map(|s| s.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" "),
-    );
+    // Evidência é o que o candidato disse: trecho do entrevistador não conta.
+    let corpus = segments
+        .iter()
+        .filter(|s| s.source == candidate)
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut dropped = 0;
 
     let mut competencies = Vec::new();
@@ -224,7 +235,11 @@ pub async fn generate(db: &Arc<Db>, llm: &LlmClient, session_id: i64) -> Result<
 }
 
 /// A transcrição como texto, com o minuto de cada fala e os momentos marcados.
-fn transcript_text(segments: &[crate::db::Segment], marks: &[crate::db::Mark]) -> String {
+fn transcript_text(
+    segments: &[crate::db::Segment],
+    marks: &[crate::db::Mark],
+    candidate: Source,
+) -> String {
     let mut out = String::from("Transcrição completa:\n");
     let mut marks = marks.iter().filter(|m| m.kind == "mark").peekable();
     for s in segments {
@@ -234,10 +249,10 @@ fn transcript_text(segments: &[crate::db::Segment], marks: &[crate::db::Mark]) -
                 clock(m.t_ms)
             ));
         }
-        let who = if s.source == Source::Mic {
-            "Entrevistador"
-        } else {
+        let who = if s.source == candidate {
             "Candidato"
+        } else {
+            "Entrevistador"
         };
         out.push_str(&format!("[{}] {who}: {}\n", clock(s.start_ms), s.text));
     }
@@ -249,7 +264,7 @@ fn evidences(items: &Value, corpus: &str, dropped: &mut usize) -> Vec<Evidence> 
     let mut out = Vec::new();
     for e in items.as_array().into_iter().flatten() {
         let quote = e["trecho"].as_str().unwrap_or_default().trim().to_string();
-        if quote_in(&quote, corpus) {
+        if quote_in_text(&quote, corpus) {
             out.push(Evidence {
                 text: e["texto"].as_str().unwrap_or_default().trim().to_string(),
                 quote,

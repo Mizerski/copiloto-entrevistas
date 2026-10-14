@@ -12,6 +12,7 @@ use crate::db::{Db, NewSession};
 use crate::deepgram::{self, DeepgramConfig, SttEvent};
 use crate::kit::Kit;
 use crate::llm::LlmClient;
+use crate::practice::Persona;
 use crate::session::{Session, SessionEvent};
 
 const TICK: Duration = Duration::from_millis(250);
@@ -34,6 +35,8 @@ pub struct AnalysisSetup {
     pub kit: Kit,
     pub candidate: Candidate,
     pub llm: Option<LlmClient>,
+    /// Treino: a persona do entrevistador simulado.
+    pub practice: Option<&'static Persona>,
 }
 
 pub struct Listeners {
@@ -51,6 +54,8 @@ pub struct LiveSession {
     started_at: Instant,
     open_streams: Arc<AtomicUsize>,
     paused: Arc<AtomicBool>,
+    /// Treino: o microfone fica mudo enquanto a voz do entrevistador toca.
+    mic_muted: Arc<AtomicBool>,
 }
 
 impl LiveSession {
@@ -78,6 +83,7 @@ impl LiveSession {
                 setup.llm,
                 setup.kit,
                 &setup.candidate,
+                setup.practice,
                 listeners.on_analysis.clone(),
             );
             let _ = analyzer_slot.set(a.clone());
@@ -136,6 +142,7 @@ impl LiveSession {
         }
 
         let paused = Arc::new(AtomicBool::new(false));
+        let mic_muted = Arc::new(AtomicBool::new(false));
         let on_capture = listeners.on_capture;
         let capture = Capture::start(
             CaptureConfig {
@@ -146,10 +153,12 @@ impl LiveSession {
             },
             move |event| on_capture(event),
             {
-                let paused = paused.clone();
+                let (paused, mic_muted) = (paused.clone(), mic_muted.clone());
                 move |chunk| {
                     // Pausado, o áudio não sai do computador; a transcrição recebe silêncio.
-                    if paused.load(Ordering::Relaxed) {
+                    if paused.load(Ordering::Relaxed)
+                        || (chunk.source == Source::Mic && mic_muted.load(Ordering::Relaxed))
+                    {
                         return;
                     }
                     let stt = match chunk.source {
@@ -178,7 +187,7 @@ impl LiveSession {
                 let now = started_at.elapsed().as_millis() as u64;
                 ticking.tick(now);
                 if let Some(a) = &ticking_analyzer {
-                    a.tick(now, ticking.sistema_heard_until());
+                    a.tick(now, ticking.heard_until(a.candidate_source()));
                 }
             }
         });
@@ -191,6 +200,7 @@ impl LiveSession {
             started_at,
             open_streams,
             paused,
+            mic_muted,
         })
     }
 
@@ -213,6 +223,32 @@ impl LiveSession {
                 .insert_mark(self.session.id, self.elapsed_ms(), kind, None)?;
         }
         Ok(())
+    }
+
+    /// Treino: a voz do entrevistador começou (`true`) ou terminou de tocar.
+    pub fn set_mic_muted(&self, muted: bool) {
+        self.mic_muted.store(muted, Ordering::SeqCst);
+    }
+
+    /// Treino: a fala do entrevistador terminou de tocar; entra na transcrição como a
+    /// outra ponta.
+    pub fn practice_spoken(&self, text: &str, duration_ms: u64) {
+        let end = self.elapsed_ms();
+        self.session.on_transcript(
+            Source::Sistema,
+            text,
+            true,
+            end.saturating_sub(duration_ms),
+            end,
+            0,
+        );
+    }
+
+    /// Treino: pula pra próxima fala do entrevistador.
+    pub fn practice_next(&self) {
+        if let Some(a) = &self.analyzer {
+            a.practice_next(self.elapsed_ms());
+        }
     }
 
     pub fn use_suggestion(&self, id: i64) {

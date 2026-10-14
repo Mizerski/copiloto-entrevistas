@@ -6,6 +6,7 @@ pub mod kit;
 pub mod live;
 pub mod llm;
 pub mod notes;
+pub mod practice;
 pub mod secrets;
 pub mod session;
 
@@ -87,6 +88,9 @@ struct StartRequest {
     /// Chamar a LLM a cada resposta. Sem isso, o kit só serve pro roteiro e pras
     /// perguntas proibidas.
     analyze: bool,
+    /// Treino com entrevistador simulado: a persona escolhida.
+    #[serde(default)]
+    practice: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -121,7 +125,13 @@ async fn start_session(
     } else {
         None
     };
+    let persona = match request.practice.as_deref() {
+        Some(id) => Some(practice::persona(id).ok_or("persona desconhecida")?),
+        None => None,
+    };
+    // No treino, a outra ponta é a voz do entrevistador simulado, que entra como texto.
     let sistema = match (request.replay_file, request.app_pid) {
+        _ if persona.is_some() => None,
         (Some(path), _) => Some(Input::File(path.into())),
         (None, Some(pid)) => Some(Input::App(pid)),
         (None, None) => None,
@@ -157,7 +167,10 @@ async fn start_session(
 
     let analysis = match &kit {
         Some(kit) => {
-            let llm = if request.analyze {
+            let llm = if persona.is_some() {
+                // Sem modelo não há entrevistador: o treino não começa.
+                Some(make_llm(&state.db, "live").map_err(|e| format!("treino: {e}"))?)
+            } else if request.analyze {
                 match make_llm(&state.db, "live") {
                     Ok(llm) => Some(llm),
                     Err(e) => {
@@ -176,8 +189,10 @@ async fn start_session(
                     checkpoints: request.candidate_checkpoints.trim().to_string(),
                 },
                 llm,
+                practice: persona,
             })
         }
+        None if persona.is_some() => return Err("o treino precisa de um kit".into()),
         None => None,
     };
 
@@ -189,6 +204,7 @@ async fn start_session(
         candidate_name: non_empty(request.candidate_name),
         candidate_resume: non_empty(request.candidate_resume),
         candidate_checkpoints: non_empty(request.candidate_checkpoints),
+        practice_persona: persona.map(|p| p.id.to_string()),
     };
 
     let emitter = |event: &'static str| {
@@ -229,6 +245,11 @@ async fn start_session(
                 items: a.coverage(),
             },
         );
+    }
+    if persona.is_some()
+        && let Some(a) = &live.analyzer
+    {
+        a.start_practice();
     }
     let session_id = live.session.id;
     *state.live.lock().unwrap() = Some(live);
@@ -337,6 +358,44 @@ async fn use_suggestion(state: State<'_, AppState>, id: i64) -> Result<(), Strin
     live.as_ref()
         .ok_or("nenhuma sessão em andamento")?
         .use_suggestion(id);
+    Ok(())
+}
+
+// Treino
+
+#[tauri::command]
+fn list_personas() -> Vec<practice::Persona> {
+    practice::PERSONAS.to_vec()
+}
+
+#[tauri::command]
+async fn set_mic_muted(state: State<'_, AppState>, muted: bool) -> Result<(), String> {
+    let live = state.live.lock().unwrap();
+    live.as_ref()
+        .ok_or("nenhuma sessão em andamento")?
+        .set_mic_muted(muted);
+    Ok(())
+}
+
+#[tauri::command]
+async fn practice_spoken(
+    state: State<'_, AppState>,
+    text: String,
+    duration_ms: u64,
+) -> Result<(), String> {
+    let live = state.live.lock().unwrap();
+    live.as_ref()
+        .ok_or("nenhuma sessão em andamento")?
+        .practice_spoken(&text, duration_ms);
+    Ok(())
+}
+
+#[tauri::command]
+async fn practice_next(state: State<'_, AppState>) -> Result<(), String> {
+    let live = state.live.lock().unwrap();
+    live.as_ref()
+        .ok_or("nenhuma sessão em andamento")?
+        .practice_next();
     Ok(())
 }
 
@@ -661,6 +720,10 @@ pub fn run() {
             set_paused,
             set_block,
             use_suggestion,
+            list_personas,
+            set_mic_muted,
+            practice_spoken,
+            practice_next,
             list_sessions,
             session_full,
             delete_session,

@@ -9,6 +9,8 @@ type Props = {
   marks?: Mark[];
   /** Rola sozinho pro fim quando chega fala nova. */
   follow?: boolean;
+  /** Nome de cada lado (no treino a outra ponta é o entrevistador). */
+  labels?: Record<Source, string>;
 };
 
 type Item =
@@ -41,7 +43,7 @@ function toItems(segments: Segment[], marks: Mark[]): Item[] {
   return items;
 }
 
-export function Transcript({ segments, partials, marks = [], follow }: Props) {
+export function Transcript({ segments, partials, marks = [], follow, labels = SOURCE_LABEL }: Props) {
   const end = useRef<HTMLDivElement>(null);
   const items = toItems(segments, marks);
   // Com o candidato falando, um parcial no microfone quase sempre é eco ou conversa
@@ -66,7 +68,7 @@ export function Transcript({ segments, partials, marks = [], follow }: Props) {
         ) : (
           <div key={item.key} className={`block ${item.source}`}>
             <div className="who">
-              {SOURCE_LABEL[item.source]} <span>{formatClock(item.startMs)}</span>
+              {labels[item.source]} <span>{formatClock(item.startMs)}</span>
             </div>
             <p>{item.texts.join(" ")}</p>
           </div>
@@ -74,7 +76,7 @@ export function Transcript({ segments, partials, marks = [], follow }: Props) {
       )}
       {visiblePartials.map((s) => (
         <div key={`partial-${s}`} className={`block partial ${s}`}>
-          <div className="who">{SOURCE_LABEL[s]}</div>
+          <div className="who">{labels[s]}</div>
           <p>{partials![s]}</p>
         </div>
       ))}

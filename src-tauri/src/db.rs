@@ -74,6 +74,10 @@ const MIGRATIONS: &[&str] = &[
         latency_ms INTEGER NOT NULL
     );
     ",
+    "
+    -- Treino: a persona do entrevistador simulado. NULL numa entrevista real.
+    ALTER TABLE sessions ADD COLUMN practice_persona TEXT;
+    ",
 ];
 
 /// Versão do esquema que cria a tabela de kits (e recebe os kits de exemplo).
@@ -103,6 +107,7 @@ pub struct NewSession {
     pub candidate_name: Option<String>,
     pub candidate_resume: Option<String>,
     pub candidate_checkpoints: Option<String>,
+    pub practice_persona: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -118,6 +123,7 @@ pub struct SessionSummary {
     pub kit_name: Option<String>,
     pub candidate_name: Option<String>,
     pub has_notes: bool,
+    pub practice_persona: Option<String>,
 }
 
 /// Tudo de uma sessão, menos as falas.
@@ -137,6 +143,7 @@ pub struct SessionDetail {
     pub coverage_json: Option<String>,
     pub summary: Option<String>,
     pub notes_json: Option<String>,
+    pub practice_persona: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -243,8 +250,9 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO sessions (started_at, other_side, kit_name, kit_markdown,
-                                   candidate_name, candidate_resume, candidate_checkpoints)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                                   candidate_name, candidate_resume, candidate_checkpoints,
+                                   practice_persona)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 now_unix_ms(),
                 new.other_side,
@@ -252,7 +260,8 @@ impl Db {
                 new.kit_markdown,
                 new.candidate_name,
                 new.candidate_resume,
-                new.candidate_checkpoints
+                new.candidate_checkpoints,
+                new.practice_persona
             ],
         )
         .map_err(err)?;
@@ -277,7 +286,8 @@ impl Db {
             .prepare(
                 "SELECT s.id, s.started_at, s.duration_ms, s.other_side, s.interrupted,
                         (SELECT COUNT(*) FROM segments g WHERE g.session_id = s.id AND g.echo = 0),
-                        s.kit_name, s.candidate_name, s.notes_json IS NOT NULL
+                        s.kit_name, s.candidate_name, s.notes_json IS NOT NULL,
+                        s.practice_persona
                  FROM sessions s ORDER BY s.started_at DESC",
             )
             .map_err(err)?;
@@ -293,6 +303,7 @@ impl Db {
                     kit_name: r.get(6)?,
                     candidate_name: r.get(7)?,
                     has_notes: r.get(8)?,
+                    practice_persona: r.get(9)?,
                 })
             })
             .map_err(err)?;
@@ -306,7 +317,7 @@ impl Db {
             .query_row(
                 "SELECT id, started_at, duration_ms, other_side, interrupted, kit_name, kit_markdown,
                         candidate_name, candidate_resume, candidate_checkpoints, coverage_json,
-                        summary, notes_json
+                        summary, notes_json, practice_persona
                  FROM sessions WHERE id = ?1",
                 [id],
                 |r| {
@@ -324,6 +335,7 @@ impl Db {
                         coverage_json: r.get(10)?,
                         summary: r.get(11)?,
                         notes_json: r.get(12)?,
+                        practice_persona: r.get(13)?,
                     })
                 },
             )

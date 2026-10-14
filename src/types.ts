@@ -50,7 +50,7 @@ export type Card = { id: number; tMs: number; kind: string; text: string; priori
 
 export type Quote = { text: string; atMs: number | null };
 
-export type BalloonSlot = "aprofundar" | "checar" | "avancar";
+export type BalloonSlot = "aprofundar" | "checar" | "avancar" | "faltou" | "cuidado" | "estrutura";
 
 export type Suggestion = {
   id: number;
@@ -69,6 +69,8 @@ export type AnalysisEvent =
   | { kind: "card"; card: Card }
   | { kind: "suggestion"; suggestion: Suggestion }
   | { kind: "suggestionUsed"; slot: BalloonSlot; id: number }
+  | { kind: "interviewerThinking" }
+  | { kind: "interviewerSays"; text: string; end: boolean }
   | { kind: "coverage"; items: CoverageItem[] }
   | { kind: "status"; state: string; message: string | null; latencyMs: number | null };
 
@@ -97,6 +99,7 @@ export type SessionSummary = {
   kitName: string | null;
   candidateName: string | null;
   hasNotes: boolean;
+  practicePersona: string | null;
 };
 
 export type SessionDetail = {
@@ -113,6 +116,7 @@ export type SessionDetail = {
   coverageJson: string | null;
   summary: string | null;
   notesJson: string | null;
+  practicePersona: string | null;
 };
 
 export type UsageTotals = { calls: number; inputTokens: number; outputTokens: number; cachedTokens: number };
@@ -143,6 +147,10 @@ export type LlmUsage = {
 
 export const SOURCES: Source[] = ["mic", "sistema"];
 export const SOURCE_LABEL: Record<Source, string> = { mic: "Você", sistema: "Candidato" };
+/** No treino você é o candidato e a outra ponta é a IA. */
+export const PRACTICE_LABEL: Record<Source, string> = { mic: "Você", sistema: "Entrevistador (IA)" };
+
+export type Persona = { id: string; name: string; description: string };
 
 export const LEVEL_LABEL: Record<Level, string> = {
   none: "sem evidência",
@@ -156,6 +164,10 @@ export const CARD_LABEL: Record<string, string> = {
   contradicao: "Contradição",
   nao_tocada: "Não explorada",
   roteiro: "Roteiro",
+  faltou: "Faltou dizer",
+  cuidado: "Cuidado",
+  estrutura: "Estrutura",
+  plural: "Falou no plural",
   curriculo: "Currículo",
   indutiva: "Pergunta indutiva",
   positivo: "Sinal forte",

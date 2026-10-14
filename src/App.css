@@ -229,6 +229,21 @@ body,
   }
 }
 
+/* Treino: o que o entrevistador simulado disse. Enquanto ele pensa, a fala anterior
+   fica apagada. */
+.interviewer-card {
+  box-shadow: inset 3px 0 0 var(--blue-9), var(--base-card-surface-box-shadow);
+}
+
+.interviewer-card p {
+  margin: 0;
+  line-height: var(--line-height-3);
+}
+
+.interviewer-old {
+  color: var(--gray-10);
+}
+
 /* Cobertura */
 
 .coverage-dot {

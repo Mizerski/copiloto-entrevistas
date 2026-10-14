@@ -9,7 +9,7 @@ import { computeMetrics } from "./metrics";
 import { Notes } from "./Notes";
 import { Transcript } from "./Transcript";
 import { Section } from "./ui";
-import type { CoverageItem, SessionFull, SessionSummary } from "./types";
+import { PRACTICE_LABEL, type CoverageItem, type SessionFull, type SessionSummary } from "./types";
 
 export function History() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -122,7 +122,11 @@ export function History() {
         <div className="no-print">
           {segments.length > 0 ? (
             <Section title="Transcrição">
-              <Transcript segments={kept} marks={marks} />
+              <Transcript
+                segments={kept}
+                marks={marks}
+                labels={detail.practicePersona ? PRACTICE_LABEL : undefined}
+              />
             </Section>
           ) : (
             <Text size="2" color="gray">
@@ -161,6 +165,11 @@ export function History() {
                   </Text>
                 </Flex>
                 <Flex gap="1" flexShrink="0">
+                  {s.practicePersona && (
+                    <Badge variant="soft" color="blue">
+                      treino
+                    </Badge>
+                  )}
                   {s.hasNotes && (
                     <Badge variant="soft" color="green">
                       parecer

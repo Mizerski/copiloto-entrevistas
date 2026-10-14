@@ -281,6 +281,13 @@ fn main() {
                 AnalysisEvent::SuggestionUsed { slot, id } => {
                     println!("    BALÃO {slot} usado (card {id})")
                 }
+                AnalysisEvent::InterviewerThinking => println!("    ENTREVISTADOR pensando"),
+                AnalysisEvent::InterviewerSays { text, end } => {
+                    println!(
+                        "    ENTREVISTADOR{}: {text}",
+                        if end { " (fim)" } else { "" }
+                    )
+                }
                 AnalysisEvent::Coverage { items } => {
                     for c in items.iter().filter(|c| !c.evidence.is_empty()) {
                         println!(
@@ -308,6 +315,7 @@ fn main() {
         kit,
         candidate: candidate.clone(),
         llm,
+        practice: None,
     });
     let live = LiveSession::start(
         LiveConfig {

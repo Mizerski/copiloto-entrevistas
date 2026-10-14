@@ -77,26 +77,38 @@ export function CardList({ cards, onDismiss }: { cards: LiveCard[]; onDismiss?: 
   );
 }
 
-const SLOTS: { slot: BalloonSlot; label: string; color: "orange" | "red" | "blue" }[] = [
+type SlotConfig = { slot: BalloonSlot; label: string; color: "orange" | "red" | "blue" };
+
+/** Entrevista real: perguntas pra você fazer. */
+export const INTERVIEW_SLOTS: SlotConfig[] = [
   { slot: "aprofundar", label: "Aprofundar", color: "orange" },
   { slot: "checar", label: "Checar", color: "red" },
   { slot: "avancar", label: "Avançar", color: "blue" },
+];
+
+/** Treino: dicas pra você, que está respondendo. */
+export const PRACTICE_SLOTS: SlotConfig[] = [
+  { slot: "faltou", label: "Faltou dizer", color: "orange" },
+  { slot: "cuidado", label: "Cuidado", color: "red" },
+  { slot: "estrutura", label: "Estrutura", color: "blue" },
 ];
 
 type BalloonsProps = {
   suggestions: Partial<Record<BalloonSlot, Suggestion>>;
   waiting: boolean;
   onUse: (s: Suggestion) => void;
+  slots?: SlotConfig[];
 };
 
 /** Três balões fixos, cada um com uma função. O que você perguntar (ou clicar) some. */
-export function Balloons({ suggestions, waiting, onUse }: BalloonsProps) {
+export function Balloons({ suggestions, waiting, onUse, slots = INTERVIEW_SLOTS }: BalloonsProps) {
+  const practice = slots === PRACTICE_SLOTS;
   return (
     <Flex direction="column" gap="2">
-      {SLOTS.map(({ slot, label, color }) => {
+      {slots.map(({ slot, label, color }) => {
         const s = suggestions[slot];
-        // Checar só fica vermelho quando é contradição; ponto do currículo é âmbar.
-        const tone = slot === "checar" && s?.kind !== "contradicao" ? "amber" : color;
+        // O balão vermelho só fica vermelho quando é contradição; o resto é âmbar.
+        const tone = color === "red" && s?.kind !== "contradicao" ? "amber" : color;
         if (!s) {
           return (
             <Card key={slot} size="1" className="hint-card gray balloon empty">
@@ -104,7 +116,7 @@ export function Balloons({ suggestions, waiting, onUse }: BalloonsProps) {
                 {label}
               </Text>
               <Text size="1" color="gray" ml="2">
-                {waiting ? "ouvindo…" : "aparece quando o candidato responder"}
+                {waiting ? "ouvindo…" : practice ? "aparece enquanto você responde" : "aparece quando o candidato responder"}
               </Text>
             </Card>
           );
@@ -116,7 +128,7 @@ export function Balloons({ suggestions, waiting, onUse }: BalloonsProps) {
             className={`hint-card ${tone} balloon`}
             role="button"
             tabIndex={0}
-            title="Marcar como perguntada"
+            title={practice ? "Dispensar a dica" : "Marcar como perguntada"}
             onClick={() => onUse(s)}
             onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onUse(s)}
           >

@@ -101,6 +101,27 @@ function playDemo() {
   at(8_000, () => emit("analise", { kind: "card", card: { id: 3, tMs: 26_000, kind: "proibida", text: "Pergunta proibida (\"tem filhos\"). Mude de assunto.", priority: "alta" } }));
 }
 
+function playPractice() {
+  timers.forEach(clearTimeout);
+  timers = [];
+  const at = (ms: number, fn: () => void) => timers.push(window.setTimeout(fn, ms));
+  emit("analise", { kind: "interviewerThinking" });
+  at(1_200, () =>
+    emit("analise", {
+      kind: "interviewerSays",
+      text: "Oi, tudo bem? Vou te fazer algumas perguntas sobre a sua experiência com backend. Pra começar, me conta de um projeto difícil em que você trabalhou.",
+      end: false,
+    }),
+  );
+  at(3_000, () => {
+    const tip = (id: number, slot: string, kind: string, question: string, why: string) =>
+      emit("analise", { kind: "suggestion", suggestion: { id, slot, tMs: 20_000, kind, question, why, earlier: null, now: null, latencyMs: 1700 } });
+    tip(21, "faltou", "faltou", "Diga quanto a confirmação do Pix melhorou, com um número.", "mostrar resultado");
+    tip(22, "cuidado", "plural", "Você disse \"a gente fez\": conte qual foi a sua parte.", "separar você do time");
+    tip(23, "estrutura", "estrutura", "Feche com o que você aprendeu e faria diferente.", "fechar a resposta");
+  });
+}
+
 const fullSession: SessionFull = {
   detail: {
     id: 7,
@@ -123,6 +144,7 @@ const fullSession: SessionFull = {
     ),
     summary: "Candidata descreveu a migração de pagamentos para eventos com Kafka.",
     notesJson: null,
+    practicePersona: null,
   },
   segments: script.map(([t, s, text]) => seg(t, s, text)),
   cards: [{ id: 1, tMs: 18_000, kind: "aprofundar", text: "Pergunte qual foi a parte dela na migração.", priority: "media" }],
@@ -160,7 +182,21 @@ export function installDevMock() {
           };
         case "test_llm":
           throw "salve a chave da Anthropic nas configurações";
+        case "list_personas":
+          return [
+            { id: "tecnica", name: "Técnica e direta", description: "Vai direto ao ponto e pede detalhes, números e decisões." },
+            { id: "acolhedora", name: "Acolhedora (RH)", description: "Deixa à vontade e puxa histórias de comportamento." },
+            { id: "exigente", name: "Exigente", description: "Pressiona quando a resposta é vaga e cobra contradições." },
+          ];
+        case "set_mic_muted":
+        case "practice_spoken":
+        case "practice_next":
+          return null;
         case "start_session":
+          if ((a.request as { practice?: string } | undefined)?.practice) {
+            playPractice();
+            return { sessionId: 2, wavDir: null, kit: parseKit(backendKit), warnings: [] };
+          }
           playDemo();
           return { sessionId: 1, wavDir: null, kit: parseKit(backendKit), warnings: [] };
         case "stop_session":

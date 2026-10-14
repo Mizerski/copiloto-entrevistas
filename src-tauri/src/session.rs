@@ -55,6 +55,8 @@ struct Inner {
     recent_sistema: VecDeque<Segment>,
     /// Intervalos recentes em que o outro lado estava falando (parciais e finais).
     sistema_activity: VecDeque<(u64, u64)>,
+    /// Até quando o microfone foi ouvido (parciais e finais).
+    mic_heard_until: u64,
     echoes: usize,
     finished: bool,
 }
@@ -78,9 +80,12 @@ impl Session {
         self.inner.lock().unwrap().finished
     }
 
-    /// Até quando o outro lado foi ouvido falando, contando os resultados parciais.
-    pub fn sistema_heard_until(&self) -> u64 {
+    /// Até quando a fonte foi ouvida falando, contando os resultados parciais.
+    pub fn heard_until(&self, source: Source) -> u64 {
         let inner = self.inner.lock().unwrap();
+        if source == Source::Mic {
+            return inner.mic_heard_until;
+        }
         inner
             .sistema_activity
             .iter()
@@ -103,8 +108,9 @@ impl Session {
         if inner.finished {
             return;
         }
-        if source == Source::Sistema {
-            inner.sistema_activity.push_back((start_ms, end_ms));
+        match source {
+            Source::Sistema => inner.sistema_activity.push_back((start_ms, end_ms)),
+            Source::Mic => inner.mic_heard_until = inner.mic_heard_until.max(end_ms),
         }
         if !is_final {
             return;
