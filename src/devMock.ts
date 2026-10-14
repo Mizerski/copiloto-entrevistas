@@ -145,6 +145,7 @@ const fullSession: SessionFull = {
     summary: "Candidata descreveu a migração de pagamentos para eventos com Kafka.",
     notesJson: null,
     practicePersona: null,
+    side: null,
   },
   segments: script.map(([t, s, text]) => seg(t, s, text)),
   cards: [{ id: 1, tMs: 18_000, kind: "aprofundar", text: "Pergunte qual foi a parte dela na migração.", priority: "media" }],
@@ -182,6 +183,10 @@ export function installDevMock() {
           };
         case "test_llm":
           throw "salve a chave da Anthropic nas configurações";
+        case "list_profiles":
+          return [{ id: 1, name: "Ana Souza", markdown: "# Ana Souza\n\n## Experiências\n\n### PagaJá · Backend sênior\n\n## Histórias\n\n### Pagamento duplicado no Pix\n", updatedAt: Date.now() }];
+        case "parse_profile":
+          return { name: "Ana Souza", experiences: ["PagaJá · Backend sênior"], stories: ["Pagamento duplicado no Pix"], terms: [], warnings: [] };
         case "list_personas":
           return [
             { id: "tecnica", name: "Técnica e direta", description: "Vai direto ao ponto e pede detalhes, números e decisões." },

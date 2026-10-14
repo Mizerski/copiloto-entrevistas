@@ -125,8 +125,9 @@ pub async fn generate(db: &Arc<Db>, llm: &LlmClient, session_id: i64) -> Result<
         }
     }
 
-    // No treino, quem respondeu foi o microfone.
-    let candidate = if detail.practice_persona.is_some() {
+    // No treino e no modo candidato, quem respondeu foi o microfone.
+    let candidate_side = detail.side.as_deref() == Some("candidato");
+    let candidate = if detail.practice_persona.is_some() || candidate_side {
         Source::Mic
     } else {
         Source::Sistema
@@ -134,6 +135,8 @@ pub async fn generate(db: &Arc<Db>, llm: &LlmClient, session_id: i64) -> Result<
     let transcript = transcript_text(&segments, &marks, candidate);
     let system = if detail.practice_persona.is_some() {
         format!("{SYSTEM}{}", crate::practice::NOTES_NOTE)
+    } else if candidate_side {
+        format!("{SYSTEM}{}", crate::profile::NOTES_NOTE)
     } else {
         SYSTEM.to_string()
     };

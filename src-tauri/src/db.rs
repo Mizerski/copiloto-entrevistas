@@ -78,6 +78,17 @@ const MIGRATIONS: &[&str] = &[
     -- Treino: a persona do entrevistador simulado. NULL numa entrevista real.
     ALTER TABLE sessions ADD COLUMN practice_persona TEXT;
     ",
+    "
+    -- De que lado o app estava: NULL (entrevistador, ou treino) ou 'candidato'.
+    ALTER TABLE sessions ADD COLUMN side TEXT;
+    -- Perfis de candidato, no mesmo formato dos kits (Markdown com nome).
+    CREATE TABLE profiles (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        markdown TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    ",
 ];
 
 /// Versão do esquema que cria a tabela de kits (e recebe os kits de exemplo).
@@ -108,6 +119,7 @@ pub struct NewSession {
     pub candidate_resume: Option<String>,
     pub candidate_checkpoints: Option<String>,
     pub practice_persona: Option<String>,
+    pub side: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -124,6 +136,7 @@ pub struct SessionSummary {
     pub candidate_name: Option<String>,
     pub has_notes: bool,
     pub practice_persona: Option<String>,
+    pub side: Option<String>,
 }
 
 /// Tudo de uma sessão, menos as falas.
@@ -144,6 +157,7 @@ pub struct SessionDetail {
     pub summary: Option<String>,
     pub notes_json: Option<String>,
     pub practice_persona: Option<String>,
+    pub side: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -251,8 +265,8 @@ impl Db {
         conn.execute(
             "INSERT INTO sessions (started_at, other_side, kit_name, kit_markdown,
                                    candidate_name, candidate_resume, candidate_checkpoints,
-                                   practice_persona)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                   practice_persona, side)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 now_unix_ms(),
                 new.other_side,
@@ -261,7 +275,8 @@ impl Db {
                 new.candidate_name,
                 new.candidate_resume,
                 new.candidate_checkpoints,
-                new.practice_persona
+                new.practice_persona,
+                new.side
             ],
         )
         .map_err(err)?;
@@ -287,7 +302,7 @@ impl Db {
                 "SELECT s.id, s.started_at, s.duration_ms, s.other_side, s.interrupted,
                         (SELECT COUNT(*) FROM segments g WHERE g.session_id = s.id AND g.echo = 0),
                         s.kit_name, s.candidate_name, s.notes_json IS NOT NULL,
-                        s.practice_persona
+                        s.practice_persona, s.side
                  FROM sessions s ORDER BY s.started_at DESC",
             )
             .map_err(err)?;
@@ -304,6 +319,7 @@ impl Db {
                     candidate_name: r.get(7)?,
                     has_notes: r.get(8)?,
                     practice_persona: r.get(9)?,
+                    side: r.get(10)?,
                 })
             })
             .map_err(err)?;
@@ -317,7 +333,7 @@ impl Db {
             .query_row(
                 "SELECT id, started_at, duration_ms, other_side, interrupted, kit_name, kit_markdown,
                         candidate_name, candidate_resume, candidate_checkpoints, coverage_json,
-                        summary, notes_json, practice_persona
+                        summary, notes_json, practice_persona, side
                  FROM sessions WHERE id = ?1",
                 [id],
                 |r| {
@@ -336,6 +352,7 @@ impl Db {
                         summary: r.get(11)?,
                         notes_json: r.get(12)?,
                         practice_persona: r.get(13)?,
+                        side: r.get(14)?,
                     })
                 },
             )
@@ -678,6 +695,67 @@ impl Db {
                 Ok(conn.last_insert_rowid())
             }
         }
+    }
+
+    // Perfis de candidato
+
+    pub fn list_profiles(&self) -> Result<Vec<KitRow>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, markdown, updated_at FROM profiles ORDER BY name COLLATE NOCASE",
+            )
+            .map_err(err)?;
+        let rows = stmt.query_map([], kit_row).map_err(err)?;
+        rows.collect::<Result<_, _>>().map_err(err)
+    }
+
+    pub fn get_profile(&self, id: i64) -> Result<KitRow, String> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id, name, markdown, updated_at FROM profiles WHERE id = ?1",
+                [id],
+                kit_row,
+            )
+            .map_err(err)
+    }
+
+    /// Cria (sem `id`) ou atualiza um perfil. O nome vem do título do Markdown.
+    pub fn save_profile(&self, id: Option<i64>, markdown: &str) -> Result<i64, String> {
+        let mut name = crate::profile::parse(markdown).name;
+        if name.is_empty() {
+            name = "Perfil sem nome".into();
+        }
+        let conn = self.conn.lock().unwrap();
+        match id {
+            Some(id) => {
+                conn.execute(
+                    "UPDATE profiles SET name = ?2, markdown = ?3, updated_at = ?4 WHERE id = ?1",
+                    params![id, name, markdown, now_unix_ms()],
+                )
+                .map_err(err)?;
+                Ok(id)
+            }
+            None => {
+                conn.execute(
+                    "INSERT INTO profiles (name, markdown, updated_at) VALUES (?1, ?2, ?3)",
+                    params![name, markdown, now_unix_ms()],
+                )
+                .map_err(err)?;
+                Ok(conn.last_insert_rowid())
+            }
+        }
+    }
+
+    pub fn delete_profile(&self, id: i64) -> Result<(), String> {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM profiles WHERE id = ?1", [id])
+            .map_err(err)?;
+        Ok(())
     }
 
     pub fn delete_kit(&self, id: i64) -> Result<(), String> {

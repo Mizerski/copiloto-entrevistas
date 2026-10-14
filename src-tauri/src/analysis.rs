@@ -15,6 +15,12 @@
 //!
 //! Perguntas proibidas são checadas localmente, sem LLM, na hora.
 //!
+//! No modo candidato (`Side::Candidate`), quem usa o app é quem está sendo entrevistado:
+//! o microfone é o candidato e a chamada é o entrevistador. Quando o entrevistador
+//! pergunta, os balões mostram como responder com o que está no perfil da pessoa (nunca
+//! inventando experiência), a história do perfil que serve de exemplo e o que exige
+//! atenção (contradição com o que ela já disse, pergunta em duas partes).
+//!
 //! No modo treino (`practice`), os papéis se invertem: quem usa o app é o candidato (o
 //! microfone) e o entrevistador é uma IA, cuja fala entra como a outra ponta. Os balões
 //! viram dicas pra quem treina, e a cada resposta fechada a IA prepara a próxima fala.
@@ -49,6 +55,12 @@ const BACKCHANNEL_WORDS: usize = 3;
 const SLOTS: [&str; 3] = ["aprofundar", "checar", "avancar"];
 /// Os balões do treino: dicas pra quem está respondendo.
 const PRACTICE_SLOTS: [&str; 3] = ["faltou", "cuidado", "estrutura"];
+/// Os balões do modo candidato: o que responder à pergunta do entrevistador.
+const CANDIDATE_SLOTS: [&str; 3] = ["responda", "historia", "atencao"];
+/// Modo candidato: palavras novas da pergunta que disparam outra sugestão.
+const ANSWER_EVERY_WORDS: usize = 6;
+/// Modo candidato: silêncio do entrevistador que fecha a pergunta.
+const QUESTION_DONE_MS: u64 = 1_200;
 /// Conversa mandada pro entrevistador simulado (trocas mais recentes).
 const INTERVIEWER_TURNS: usize = 6;
 /// Fatos guardados na memória da entrevista (os mais recentes).
@@ -213,6 +225,17 @@ struct Fact {
     quote: String,
 }
 
+/// De que lado da entrevista o app está.
+#[derive(Debug, Clone)]
+pub enum Side {
+    /// Quem usa o app entrevista (o microfone pergunta).
+    Interviewer,
+    /// Treino: uma IA entrevista, com esta persona.
+    Practice(&'static Persona),
+    /// Quem usa o app está sendo entrevistado. O perfil vai em `Candidate::resume`.
+    Candidate { job: String },
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Candidate {
     pub name: String,
@@ -276,6 +299,8 @@ pub struct Analyzer {
     /// Quem pergunta: o microfone numa entrevista real, a outra ponta no treino.
     interviewer: Source,
     practice: Option<&'static Persona>,
+    /// Modo candidato: o app ajuda quem responde.
+    candidate_side: bool,
     /// Treino: a IA está preparando ou falando a próxima fala.
     interviewer_busy: AtomicBool,
     /// Treino: a pessoa respondeu desde a última fala da IA.
@@ -292,20 +317,41 @@ impl Analyzer {
         llm: Option<LlmClient>,
         kit: Kit,
         candidate: &Candidate,
-        practice: Option<&'static Persona>,
+        side: Side,
         emit: Arc<dyn Fn(AnalysisEvent) + Send + Sync>,
     ) -> Arc<Self> {
-        let mut stable_context = kit.to_prompt();
-        stable_context.push_str("\n## Candidato\n");
-        if !candidate.name.is_empty() {
-            stable_context.push_str(&format!("Nome: {}\n", candidate.name));
-        }
-        if !candidate.resume.is_empty() {
-            stable_context.push_str(&format!("Currículo:\n{}\n", candidate.resume));
-        }
-        if !candidate.checkpoints.is_empty() {
-            stable_context.push_str(&format!("Pontos a checar:\n{}\n", candidate.checkpoints));
-        }
+        let practice = match side {
+            Side::Practice(p) => Some(p),
+            _ => None,
+        };
+        let stable_context = match &side {
+            Side::Candidate { job } => {
+                let mut out = String::new();
+                if !job.trim().is_empty() {
+                    out.push_str(&format!("# Vaga\n{}\n\n", job.trim()));
+                }
+                out.push_str(&format!(
+                    "# Perfil de quem está sendo entrevistado (escrito pela própria pessoa)\n{}\n",
+                    candidate.resume
+                ));
+                out
+            }
+            _ => {
+                let mut out = kit.to_prompt();
+                out.push_str("\n## Candidato\n");
+                if !candidate.name.is_empty() {
+                    out.push_str(&format!("Nome: {}\n", candidate.name));
+                }
+                if !candidate.resume.is_empty() {
+                    out.push_str(&format!("Currículo:\n{}\n", candidate.resume));
+                }
+                if !candidate.checkpoints.is_empty() {
+                    out.push_str(&format!("Pontos a checar:\n{}\n", candidate.checkpoints));
+                }
+                out
+            }
+        };
+        let candidate_side = matches!(side, Side::Candidate { .. });
         let coverage = kit
             .competencies
             .iter()
@@ -336,12 +382,13 @@ impl Analyzer {
             }),
             generation: AtomicU64::new(0),
             emit,
-            interviewer: if practice.is_some() {
+            interviewer: if practice.is_some() || candidate_side {
                 Source::Sistema
             } else {
                 Source::Mic
             },
             practice,
+            candidate_side,
             interviewer_busy: AtomicBool::new(false),
             answered: AtomicBool::new(true),
             ended: AtomicBool::new(false),
@@ -359,6 +406,8 @@ impl Analyzer {
     fn slot_names(&self) -> [&'static str; 3] {
         if self.practice.is_some() {
             PRACTICE_SLOTS
+        } else if self.candidate_side {
+            CANDIDATE_SLOTS
         } else {
             SLOTS
         }
@@ -383,7 +432,7 @@ impl Analyzer {
         }
         let from_interviewer = segment.source == self.interviewer;
         if from_interviewer
-            && self.practice.is_none()
+            && self.interviewer == Source::Mic
             && let Some(phrase) = self.kit.forbidden_in(&segment.text)
         {
             self.card(
@@ -393,7 +442,7 @@ impl Analyzer {
                 "alta",
             );
         }
-        let (close, question) = {
+        let (close, question, new_turn) = {
             let mut st = self.state.lock().unwrap();
             match from_interviewer {
                 true => {
@@ -406,7 +455,8 @@ impl Analyzer {
                         st.turns.last_mut().unwrap().answer.push(segment.clone());
                         return;
                     }
-                    if previous_open || st.turns.is_empty() {
+                    let new_turn = previous_open || st.turns.is_empty();
+                    if new_turn {
                         st.turns.push(Turn {
                             question: vec![segment.clone()],
                             ..Default::default()
@@ -416,17 +466,34 @@ impl Analyzer {
                     }
                     // O entrevistador voltou a falar: a resposta anterior fechou.
                     let close = previous_open && needs_analysis(&st.turns[st.turns.len() - 2]);
-                    (close, Some(join(&st.turns.last().unwrap().question)))
+                    (
+                        close,
+                        Some(join(&st.turns.last().unwrap().question)),
+                        new_turn,
+                    )
                 }
                 false => {
                     if st.turns.is_empty() {
                         st.turns.push(Turn::default());
                     }
                     st.turns.last_mut().unwrap().answer.push(segment.clone());
-                    (false, None)
+                    (false, None, false)
                 }
             }
         };
+        if self.candidate_side {
+            if from_interviewer {
+                // Pergunta nova: os balões eram da anterior.
+                if new_turn {
+                    self.take_slots(|_| true, false);
+                }
+                self.suggest_answer(segment.end_ms, false);
+            }
+            if close {
+                self.analyze(segment.end_ms);
+            }
+            return;
+        }
         match (question, self.practice) {
             // Treino: a IA falou de novo; as dicas eram da resposta anterior.
             (Some(_), Some(_)) => {
@@ -557,7 +624,27 @@ impl Analyzer {
     /// `heard_until_ms`: até quando o candidato foi ouvido, contando os parciais. As
     /// falas finais chegam a cada poucos segundos e com atraso; olhar só pra elas
     /// confunde pausa de transcrição com fim de resposta.
-    pub fn tick(self: &Arc<Self>, now_ms: u64, heard_until_ms: u64) {
+    /// `interviewer_heard_ms`: o mesmo pra quem pergunta (fecha a pergunta no modo
+    /// candidato).
+    pub fn tick(self: &Arc<Self>, now_ms: u64, heard_until_ms: u64, interviewer_heard_ms: u64) {
+        if self.candidate_side {
+            let question_done = {
+                let st = self.state.lock().unwrap();
+                st.turns.last().is_some_and(|t| {
+                    let last = t
+                        .question
+                        .last()
+                        .map_or(0, |s| s.end_ms)
+                        .max(interviewer_heard_ms);
+                    !t.question.is_empty()
+                        && t.answer.is_empty()
+                        && now_ms >= last + QUESTION_DONE_MS
+                })
+            };
+            if question_done {
+                self.suggest_answer(now_ms, true);
+            }
+        }
         let silent_answer = {
             let st = self.state.lock().unwrap();
             st.turns.last().is_some_and(|t| {
@@ -660,6 +747,9 @@ impl Analyzer {
     /// palavras novas; no fim (`closing`), sempre que houver algo novo. Uma de cada vez:
     /// se chegar fala nova enquanto uma está no ar, outra sai quando ela voltar.
     fn suggest(self: &Arc<Self>, now_ms: u64, closing: bool) {
+        if self.candidate_side {
+            return;
+        }
         let Some(llm) = self.llm.clone() else { return };
         let (user, turn_index) = {
             let mut st = self.state.lock().unwrap();
@@ -729,6 +819,110 @@ impl Analyzer {
                 this.suggest(at_ms, false);
             }
         });
+    }
+
+    /// Modo candidato: o que responder à pergunta do entrevistador. Começa enquanto ele
+    /// ainda pergunta (a cada `ANSWER_EVERY_WORDS` palavras novas) e de novo quando ele
+    /// para de falar, pra estar na tela quando for a sua vez.
+    fn suggest_answer(self: &Arc<Self>, now_ms: u64, closing: bool) {
+        let Some(llm) = self.llm.clone() else { return };
+        let (user, turn_index) = {
+            let mut st = self.state.lock().unwrap();
+            let Some(index) = st.turns.len().checked_sub(1) else {
+                return;
+            };
+            if st.turns[index].question.is_empty() {
+                return;
+            }
+            let words = word_count(&join(&st.turns[index].question));
+            let seen = if st.suggest.turn == index {
+                st.suggest.words_at_request
+            } else {
+                0
+            };
+            let enough = if closing {
+                words > seen
+            } else {
+                words >= seen + ANSWER_EVERY_WORDS || (seen == 0 && words >= 3)
+            };
+            if st.suggest.in_flight || !enough {
+                return;
+            }
+            st.suggest = SuggestState {
+                in_flight: true,
+                words_at_request: words,
+                turn: index,
+            };
+            (self.answer_prompt(&st, index, now_ms), index)
+        };
+
+        let this = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let schema = crate::profile::answer_schema();
+            let prompt = Prompt {
+                system: crate::profile::ANSWER_SYSTEM,
+                stable_context: &this.stable_context,
+                user: &user,
+                schema: &schema,
+                max_tokens: 2500,
+            };
+            let result = llm.complete_json(&prompt).await;
+            let (current, at_ms) = {
+                let mut st = this.state.lock().unwrap();
+                st.suggest.in_flight = false;
+                let at = st
+                    .turns
+                    .get(turn_index)
+                    .and_then(|t| t.question.last())
+                    .map_or(now_ms, |s| s.end_ms);
+                // O entrevistador já passou pra outra pergunta: esta perdeu a hora.
+                (st.turns.len() == turn_index + 1, at)
+            };
+            match result {
+                Ok((value, usage)) => {
+                    let _ = this.db.insert_usage(this.session_id, "resposta", &usage);
+                    if current {
+                        this.show_suggestions(&value, turn_index, at_ms, usage.latency_ms);
+                    }
+                }
+                Err(e) => this.status("erro", Some(e), None),
+            }
+            if current {
+                // A pergunta continuou enquanto esta estava no ar.
+                this.suggest_answer(at_ms, false);
+            }
+        });
+    }
+
+    fn answer_prompt(&self, st: &State, index: usize, now_ms: u64) -> String {
+        let mut out = format!("Tempo de entrevista: {}.\n", clock(now_ms));
+        if !st.summary.is_empty() {
+            out.push_str(&format!("\nResumo da conversa até aqui:\n{}\n", st.summary));
+        }
+        if !st.facts.is_empty() {
+            out.push_str("\nO que você já disse nesta entrevista:\n");
+            for f in &st.facts {
+                out.push_str(&format!(
+                    "- [{}] {} (\"{}\")\n",
+                    clock(f.at_ms),
+                    f.claim,
+                    f.quote
+                ));
+            }
+        }
+        if !st.slots.is_empty() {
+            out.push_str("\nBalões na tela agora:\n");
+            for s in &st.slots {
+                out.push_str(&format!("- {}: {}\n", s.slot, s.question));
+            }
+        }
+        out.push_str("\nConversa recente (a última pergunta pode estar em andamento):\n");
+        push_turns(
+            &mut out,
+            &st.turns[index.saturating_sub(CONTEXT_TURNS)..=index],
+            self.interviewer,
+        );
+        out
     }
 
     /// Atualiza os balões. Um balão só troca quando a pergunta nova é diferente da que
@@ -812,7 +1006,14 @@ impl Analyzer {
         if before.is_empty() || now.is_empty() {
             return None;
         }
-        let current: Vec<&Segment> = st.turns.get(turn_index)?.answer.iter().collect();
+        let turn = st.turns.get(turn_index)?;
+        // No modo candidato, o "agora" é a pergunta do entrevistador (ou o começo da sua
+        // resposta); nos outros, a resposta do candidato.
+        let current: Vec<&Segment> = if self.candidate_side {
+            turn.question.iter().chain(&turn.answer).collect()
+        } else {
+            turn.answer.iter().collect()
+        };
         let now_at = find_quote(now, &current)?;
         let earlier: Vec<&Segment> = st.turns[..turn_index]
             .iter()
@@ -951,12 +1152,13 @@ impl Analyzer {
         if let Ok(json) = serde_json::to_string(&coverage) {
             let _ = self.db.save_coverage(self.session_id, &json, &summary);
         }
-        for card in value["cards"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .take(MAX_CARDS_PER_ANSWER)
-        {
+        // As observações sobre a condução são pra quem entrevista.
+        let cards = if self.candidate_side {
+            None
+        } else {
+            value["cards"].as_array()
+        };
+        for card in cards.into_iter().flatten().take(MAX_CARDS_PER_ANSWER) {
             let text = card["texto"].as_str().unwrap_or_default().trim();
             if text.is_empty() {
                 continue;

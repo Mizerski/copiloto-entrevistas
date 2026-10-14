@@ -9,6 +9,7 @@ import {
   Button,
   Callout,
   Card,
+  Checkbox,
   Flex,
   IconButton,
   Progress,
@@ -32,16 +33,18 @@ import {
 import { Consent } from "./Consent";
 import { average, formatClock, formatMs } from "./format";
 import { History } from "./History";
-import { Balloons, BlockClock, CardList, CoveragePanel, PRACTICE_SLOTS, visibleCards } from "./Insights";
+import { Balloons, BlockClock, CANDIDATE_SLOTS, CardList, CoveragePanel, PRACTICE_SLOTS, visibleCards } from "./Insights";
 import { Kits } from "./Kits";
 import { computeMetrics } from "./metrics";
 import { Notes } from "./Notes";
 import { Onboarding } from "./Onboarding";
+import { Profiles } from "./Profiles";
 import { Settings } from "./Settings";
 import { insertSegment, Transcript } from "./Transcript";
 import { Field, Picker, Section } from "./ui";
 import { speak, stopSpeaking } from "./voice";
 import {
+  CANDIDATE_LABEL,
   PRACTICE_LABEL,
   SOURCES,
   SOURCE_LABEL,
@@ -66,9 +69,9 @@ import {
 } from "./types";
 import "./App.css";
 
-type Tab = "sessao" | "historico" | "kits" | "config";
+type Tab = "sessao" | "historico" | "kits" | "perfil" | "config";
 type Phase = "setup" | "running" | "stopping" | "done";
-type Mode = "entrevista" | "treino";
+type Mode = "entrevista" | "candidato" | "treino";
 /** O entrevistador simulado: pensando, falando, esperando você ou já se despediu. */
 type Interviewer = { state: "thinking" | "speaking" | "waiting" | "ended"; text: string };
 
@@ -129,6 +132,10 @@ function App() {
   const [mode, setMode] = useState<Mode>("entrevista");
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [personaId, setPersonaId] = useState("tecnica");
+  const [profiles, setProfiles] = useState<KitRow[]>([]);
+  const [profileId, setProfileId] = useState("");
+  const [jobDescription, setJobDescription] = useState("");
+  const [candidateAware, setCandidateAware] = useState(false);
 
   // Sessão
   const [startedAt, setStartedAt] = useState(0);
@@ -156,6 +163,7 @@ function App() {
   const [hidden, setHidden] = useState(false);
   // Treino
   const [practicing, setPracticing] = useState(false);
+  const [asCandidate, setAsCandidate] = useState(false);
   const [interviewer, setInterviewer] = useState<Interviewer | null>(null);
 
   const [log, setLog] = useState<string[]>([]);
@@ -183,6 +191,9 @@ function App() {
     try {
       setKits(await invoke<KitRow[]>("list_kits"));
       setPersonas(await invoke<Persona[]>("list_personas"));
+      const list = await invoke<KitRow[]>("list_profiles");
+      setProfiles(list);
+      setProfileId((cur) => (list.some((p) => String(p.id) === cur) ? cur : list[0] ? String(list[0].id) : ""));
       setDeepgramReady((await invoke<string | null>("deepgram_key_status")) !== null);
       setLlm(await invoke<LlmSettings>("llm_settings"));
     } catch (e) {
@@ -330,7 +341,9 @@ function App() {
     setPaused(false);
     setInterviewer(null);
     const practice = mode === "treino";
+    const candidate = mode === "candidato";
     setPracticing(practice);
+    setAsCandidate(candidate);
     try {
       const started = await invoke<{
         sessionId: number;
@@ -348,12 +361,14 @@ function App() {
           saveWav,
           transcribe: deepgramReady,
           keyterms: keyterms.split(",").map((t) => t.trim()).filter(Boolean),
-          kitId: kitId ? Number(kitId) : null,
+          kitId: kitId && !candidate ? Number(kitId) : null,
           candidateName,
           candidateResume,
           candidateCheckpoints,
-          analyze: practice || analyze,
+          analyze: practice || candidate || analyze,
           practice: practice ? personaId : null,
+          profileId: candidate && profileId ? Number(profileId) : null,
+          jobDescription: candidate ? jobDescription : "",
         },
       });
       setSessionId(started.sessionId);
@@ -364,6 +379,7 @@ function App() {
       setKit(started.kit);
       setPhase("running");
       setConsent(false);
+      setCandidateAware(false);
       getCurrentWindow().setTitle("● Gravando · Copiloto").catch(() => {});
       started.warnings.forEach((w) => addLog(w));
       if (started.wavDir) addLog(`WAVs de debug em ${started.wavDir}`);
@@ -443,13 +459,17 @@ function App() {
   ];
 
   const practice = mode === "treino";
+  const candidateMode = mode === "candidato";
   const practiceBlocked = !kitId ? "Escolha um kit: o entrevistador segue o roteiro dele." : null;
-  const labels = practicing ? PRACTICE_LABEL : SOURCE_LABEL;
+  const labels = practicing ? PRACTICE_LABEL : asCandidate ? CANDIDATE_LABEL : SOURCE_LABEL;
+  // Lado de quem responde: o app não pergunta, só mostra.
+  const answering = practicing || asCandidate;
 
   const setupView = (
     <Flex direction="column" gap="3">
       <SegmentedControl.Root value={mode} onValueChange={(v) => setMode(v as Mode)}>
-        <SegmentedControl.Item value="entrevista">Entrevista real</SegmentedControl.Item>
+        <SegmentedControl.Item value="entrevista">Entrevistador</SegmentedControl.Item>
+        <SegmentedControl.Item value="candidato">Candidato</SegmentedControl.Item>
         <SegmentedControl.Item value="treino">Treino</SegmentedControl.Item>
       </SegmentedControl.Root>
 
@@ -483,6 +503,33 @@ function App() {
         </Section>
       )}
 
+      {candidateMode && (
+        <Section title="Você">
+          <Field label="Perfil" hint="As respostas sugeridas saem só do que está nele.">
+            <Flex gap="2">
+              <Box className="grow" minWidth="0">
+                <Picker
+                  value={profileId || NONE}
+                  options={
+                    profiles.length
+                      ? profiles.map((p) => ({ value: String(p.id), label: p.name }))
+                      : [{ value: NONE, label: "Nenhum perfil ainda" }]
+                  }
+                  onChange={(v) => setProfileId(v === NONE ? "" : v)}
+                />
+              </Box>
+              <Button variant="soft" color="gray" onClick={() => setTab("perfil")}>
+                Editar
+              </Button>
+            </Flex>
+          </Field>
+          <Field label="Vaga" hint="Cole a descrição. Ajuda a ligar suas respostas aos requisitos.">
+            <TextArea rows={3} value={jobDescription} onChange={(e) => setJobDescription(e.target.value)} />
+          </Field>
+        </Section>
+      )}
+
+      {!candidateMode && (
       <Section title={practice ? "Vaga e você" : "Entrevista"}>
         <Field label="Kit">
           <Picker
@@ -530,6 +577,7 @@ function App() {
           />
         )}
       </Section>
+      )}
 
       <Section title="Áudio">
         <Field label="Microfone (você)">
@@ -540,7 +588,7 @@ function App() {
           />
         </Field>
         {!practice && (
-        <Field label="Candidato (app da chamada)">
+        <Field label={candidateMode ? "Entrevistador (app da chamada)" : "Candidato (app da chamada)"}>
           <Flex gap="2">
             <Box className="grow" minWidth="0">
               <Picker
@@ -557,13 +605,41 @@ function App() {
           </Flex>
         </Field>
         )}
-        <Field label="Termos difíceis além dos do kit" hint="Separados por vírgula: nomes, siglas da empresa.">
+        <Field
+          label={candidateMode ? "Termos difíceis além dos do perfil" : "Termos difíceis além dos do kit"}
+          hint="Separados por vírgula: nomes, siglas da empresa."
+        >
           <TextField.Root value={keyterms} onChange={(e) => setKeyterms(e.target.value)} />
         </Field>
         <SwitchRow label="Salvar WAV de debug" checked={saveWav} onChange={setSaveWav} />
       </Section>
 
-      {practice ? (
+      {candidateMode ? (
+        <Section title="Antes de começar">
+          <Text size="2" color="gray">
+            O áudio das duas pontas vai pra Deepgram e o texto da conversa vai pra{" "}
+            {llm ? `${providerName(llm.live.provider)} (${llm.live.model})` : "LLM configurada"}. Tudo fica salvo só
+            neste computador.
+          </Text>
+          <Text as="label" size="2">
+            <Flex gap="2" align="start">
+              <Checkbox checked={candidateAware} onCheckedChange={(v) => setCandidateAware(v === true)} />
+              <span>
+                Sei que a voz do entrevistador vai ser transcrita e que muitas empresas não permitem assistência
+                durante a entrevista; confirmei que posso usar.
+              </span>
+            </Flex>
+          </Text>
+          <Button size="3" disabled={!candidateAware || !profileId || !deepgramReady} onClick={start}>
+            Iniciar
+          </Button>
+          {!profileId && (
+            <Text size="1" color="gray">
+              Crie seu perfil na aba Perfil primeiro.
+            </Text>
+          )}
+        </Section>
+      ) : practice ? (
         <>
           <Callout.Root color="gray" size="1">
             <Callout.Text>
@@ -727,9 +803,9 @@ function App() {
         </Callout.Root>
       )}
 
-      {phase === "running" && (practicing || (!!kitId && analyze)) && (
+      {phase === "running" && (answering || (!!kitId && analyze)) && (
         <Balloons
-          slots={practicing ? PRACTICE_SLOTS : undefined}
+          slots={practicing ? PRACTICE_SLOTS : asCandidate ? CANDIDATE_SLOTS : undefined}
           suggestions={suggestions}
           waiting={segments.some((s) => s.source === (practicing ? "mic" : "sistema"))}
           onUse={(s) => {
@@ -765,7 +841,7 @@ function App() {
       </Card>
 
       <Flex direction="column" gap="2">
-        {practicing ? (
+        {answering ? (
           <Text size="1" color="gray" className="tabular">
             latência da sua transcrição {formatMs(average(latency.mic))}
           </Text>
@@ -817,6 +893,7 @@ function App() {
           </Tabs.Trigger>
           <Tabs.Trigger value="historico">Histórico</Tabs.Trigger>
           <Tabs.Trigger value="kits">Kits</Tabs.Trigger>
+          <Tabs.Trigger value="perfil">Perfil</Tabs.Trigger>
           <Tabs.Trigger value="config">Configurações</Tabs.Trigger>
         </Tabs.List>
       </Tabs.Root>
@@ -825,6 +902,7 @@ function App() {
         {tab === "sessao" && (phase === "setup" ? setupView : liveView)}
         {tab === "historico" && <History />}
         {tab === "kits" && <Kits onChanged={refreshSetup} />}
+        {tab === "perfil" && <Profiles onChanged={refreshSetup} />}
         {tab === "config" && <Settings onLog={addLog} />}
       </Box>
 

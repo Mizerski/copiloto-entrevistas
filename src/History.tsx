@@ -9,7 +9,7 @@ import { computeMetrics } from "./metrics";
 import { Notes } from "./Notes";
 import { Transcript } from "./Transcript";
 import { Section } from "./ui";
-import { PRACTICE_LABEL, type CoverageItem, type SessionFull, type SessionSummary } from "./types";
+import { CANDIDATE_LABEL, PRACTICE_LABEL, type CoverageItem, type SessionFull, type SessionSummary } from "./types";
 
 export function History() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -125,7 +125,9 @@ export function History() {
               <Transcript
                 segments={kept}
                 marks={marks}
-                labels={detail.practicePersona ? PRACTICE_LABEL : undefined}
+                labels={
+                  detail.practicePersona ? PRACTICE_LABEL : detail.side === "candidato" ? CANDIDATE_LABEL : undefined
+                }
               />
             </Section>
           ) : (
@@ -165,6 +167,11 @@ export function History() {
                   </Text>
                 </Flex>
                 <Flex gap="1" flexShrink="0">
+                  {s.side === "candidato" && (
+                    <Badge variant="soft" color="orange">
+                      candidato
+                    </Badge>
+                  )}
                   {s.practicePersona && (
                     <Badge variant="soft" color="blue">
                       treino

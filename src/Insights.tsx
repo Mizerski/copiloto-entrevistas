@@ -86,6 +86,13 @@ export const INTERVIEW_SLOTS: SlotConfig[] = [
   { slot: "avancar", label: "Avançar", color: "blue" },
 ];
 
+/** Modo candidato: o que responder ao entrevistador, tirado do seu perfil. */
+export const CANDIDATE_SLOTS: SlotConfig[] = [
+  { slot: "responda", label: "Responda", color: "orange" },
+  { slot: "historia", label: "Sua história", color: "blue" },
+  { slot: "atencao", label: "Atenção", color: "red" },
+];
+
 /** Treino: dicas pra você, que está respondendo. */
 export const PRACTICE_SLOTS: SlotConfig[] = [
   { slot: "faltou", label: "Faltou dizer", color: "orange" },
@@ -103,6 +110,12 @@ type BalloonsProps = {
 /** Três balões fixos, cada um com uma função. O que você perguntar (ou clicar) some. */
 export function Balloons({ suggestions, waiting, onUse, slots = INTERVIEW_SLOTS }: BalloonsProps) {
   const practice = slots === PRACTICE_SLOTS;
+  const candidate = slots === CANDIDATE_SLOTS;
+  const emptyText = candidate
+    ? "aparece quando o entrevistador perguntar"
+    : practice
+      ? "aparece enquanto você responde"
+      : "aparece quando o candidato responder";
   return (
     <Flex direction="column" gap="2">
       {slots.map(({ slot, label, color }) => {
@@ -116,7 +129,7 @@ export function Balloons({ suggestions, waiting, onUse, slots = INTERVIEW_SLOTS 
                 {label}
               </Text>
               <Text size="1" color="gray" ml="2">
-                {waiting ? "ouvindo…" : practice ? "aparece enquanto você responde" : "aparece quando o candidato responder"}
+                {waiting ? "ouvindo…" : emptyText}
               </Text>
             </Card>
           );
@@ -128,7 +141,7 @@ export function Balloons({ suggestions, waiting, onUse, slots = INTERVIEW_SLOTS 
             className={`hint-card ${tone} balloon`}
             role="button"
             tabIndex={0}
-            title={practice ? "Dispensar a dica" : "Marcar como perguntada"}
+            title={practice || candidate ? "Dispensar" : "Marcar como perguntada"}
             onClick={() => onUse(s)}
             onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onUse(s)}
           >
@@ -145,9 +158,18 @@ export function Balloons({ suggestions, waiting, onUse, slots = INTERVIEW_SLOTS 
                 {formatClock(s.tMs)}
               </Text>
             </Flex>
-            <Text as="p" size="3" weight="medium" key={s.id} className="balloon-text">
-              {s.question}
-            </Text>
+            {s.slot === "responda" ? (
+              // Os pontos da resposta, um por linha.
+              <ul key={s.id} className="balloon-text balloon-points">
+                {s.question.split(" · ").map((point) => (
+                  <li key={point}>{point}</li>
+                ))}
+              </ul>
+            ) : (
+              <Text as="p" size="3" weight="medium" key={s.id} className="balloon-text">
+                {s.question}
+              </Text>
+            )}
             {s.earlier && s.now && (
               <Flex direction="column" gap="1" mt="2" className="contradiction">
                 <Text size="1" color="gray">

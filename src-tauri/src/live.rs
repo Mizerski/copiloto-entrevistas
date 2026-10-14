@@ -6,13 +6,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::analysis::{AnalysisEvent, Analyzer, Candidate};
+use crate::analysis::{AnalysisEvent, Analyzer, Candidate, Side};
 use crate::audio::{Capture, CaptureConfig, CaptureEvent, Input, Source};
 use crate::db::{Db, NewSession};
 use crate::deepgram::{self, DeepgramConfig, SttEvent};
 use crate::kit::Kit;
 use crate::llm::LlmClient;
-use crate::practice::Persona;
 use crate::session::{Session, SessionEvent};
 
 const TICK: Duration = Duration::from_millis(250);
@@ -35,8 +34,8 @@ pub struct AnalysisSetup {
     pub kit: Kit,
     pub candidate: Candidate,
     pub llm: Option<LlmClient>,
-    /// Treino: a persona do entrevistador simulado.
-    pub practice: Option<&'static Persona>,
+    /// De que lado o app está (entrevistador, treino ou candidato).
+    pub side: Side,
 }
 
 pub struct Listeners {
@@ -83,7 +82,7 @@ impl LiveSession {
                 setup.llm,
                 setup.kit,
                 &setup.candidate,
-                setup.practice,
+                setup.side,
                 listeners.on_analysis.clone(),
             );
             let _ = analyzer_slot.set(a.clone());
@@ -187,7 +186,15 @@ impl LiveSession {
                 let now = started_at.elapsed().as_millis() as u64;
                 ticking.tick(now);
                 if let Some(a) = &ticking_analyzer {
-                    a.tick(now, ticking.heard_until(a.candidate_source()));
+                    let interviewer = match a.candidate_source() {
+                        Source::Mic => Source::Sistema,
+                        Source::Sistema => Source::Mic,
+                    };
+                    a.tick(
+                        now,
+                        ticking.heard_until(a.candidate_source()),
+                        ticking.heard_until(interviewer),
+                    );
                 }
             }
         });

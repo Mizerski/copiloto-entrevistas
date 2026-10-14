@@ -1,0 +1,13 @@
+# Entrevista pro exemplo candidato_texto. E: entrevistador (a chamada), C: você (microfone).
+E: Oi Ana, tudo bem? Pra começar, me conta um pouco da sua trajetória e o que você faz hoje.
+C: Sou backend há sete anos, hoje no time de pagamentos da PagaJá, com Kotlin e Kafka, cuidando da conciliação.
+E: Legal. Me conta de uma situação difícil que você resolveu em produção.
+C: Teve o caso do pagamento duplicado no Pix, o mesmo evento chegava duas vezes e a gente cobrava em dobro.
+E: E como você mediu que o problema foi resolvido? Quanto tempo levou?
+C: Os casos foram a zero em duas semanas, a gente acompanhava num painel.
+E: Você comentou que liderou a migração de pagamentos para eventos, certo? Como foi liderar esse time?
+C: Na verdade quem liderou foi meu gestor, eu cuidei dos consumidores de conciliação.
+E: Entendi. E quando você discordou de uma decisão técnica do time, o que você fez e como terminou?
+C: Teve a fila em memória nos estornos, eu escrevi um documento com um teste e a decisão mudou para Kafka.
+E: Por último, você tem experiência com Rust?
+C: Não tenho, mas aprendo rápido.

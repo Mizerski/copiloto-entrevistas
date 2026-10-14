@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use copiloto_entrevistas_lib::analysis::{AnalysisEvent, Candidate};
+use copiloto_entrevistas_lib::analysis::{AnalysisEvent, Candidate, Side};
 use copiloto_entrevistas_lib::audio::{self, CaptureEvent, Input, Source};
 use copiloto_entrevistas_lib::db::{Db, NewSession, Segment};
 use copiloto_entrevistas_lib::deepgram::{self, DeepgramConfig, SttEvent};
@@ -315,7 +315,7 @@ fn main() {
         kit,
         candidate: candidate.clone(),
         llm,
-        practice: None,
+        side: Side::Interviewer,
     });
     let live = LiveSession::start(
         LiveConfig {

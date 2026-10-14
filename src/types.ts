@@ -50,7 +50,16 @@ export type Card = { id: number; tMs: number; kind: string; text: string; priori
 
 export type Quote = { text: string; atMs: number | null };
 
-export type BalloonSlot = "aprofundar" | "checar" | "avancar" | "faltou" | "cuidado" | "estrutura";
+export type BalloonSlot =
+  | "aprofundar"
+  | "checar"
+  | "avancar"
+  | "faltou"
+  | "cuidado"
+  | "estrutura"
+  | "responda"
+  | "historia"
+  | "atencao";
 
 export type Suggestion = {
   id: number;
@@ -100,6 +109,7 @@ export type SessionSummary = {
   candidateName: string | null;
   hasNotes: boolean;
   practicePersona: string | null;
+  side: string | null;
 };
 
 export type SessionDetail = {
@@ -117,6 +127,7 @@ export type SessionDetail = {
   summary: string | null;
   notesJson: string | null;
   practicePersona: string | null;
+  side: string | null;
 };
 
 export type UsageTotals = { calls: number; inputTokens: number; outputTokens: number; cachedTokens: number };
@@ -152,6 +163,17 @@ export const PRACTICE_LABEL: Record<Source, string> = { mic: "Você", sistema: "
 
 export type Persona = { id: string; name: string; description: string };
 
+/** No modo candidato você responde e a chamada é o entrevistador. */
+export const CANDIDATE_LABEL: Record<Source, string> = { mic: "Você", sistema: "Entrevistador" };
+
+export type ProfileInfo = {
+  name: string;
+  experiences: string[];
+  stories: string[];
+  terms: string[];
+  warnings: string[];
+};
+
 export const LEVEL_LABEL: Record<Level, string> = {
   none: "sem evidência",
   partial: "parcial",
@@ -168,6 +190,12 @@ export const CARD_LABEL: Record<string, string> = {
   cuidado: "Cuidado",
   estrutura: "Estrutura",
   plural: "Falou no plural",
+  responda: "Responda",
+  historia: "Sua história",
+  atencao: "Atenção",
+  duas_partes: "Duas partes",
+  esclarecer: "Esclarecer",
+  requisito: "Requisito da vaga",
   curriculo: "Currículo",
   indutiva: "Pergunta indutiva",
   positivo: "Sinal forte",

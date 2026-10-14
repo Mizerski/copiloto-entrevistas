@@ -10,7 +10,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use copiloto_entrevistas_lib::analysis::{AnalysisEvent, Analyzer, Candidate};
+use copiloto_entrevistas_lib::analysis::{AnalysisEvent, Analyzer, Candidate, Side};
 use copiloto_entrevistas_lib::audio::Source;
 use copiloto_entrevistas_lib::db::{Db, NewSession};
 use copiloto_entrevistas_lib::llm::{LlmClient, Provider, Slot};
@@ -67,7 +67,7 @@ fn main() {
         Some(llm(Slot::default_live())),
         kit,
         &Candidate::default(),
-        Some(persona),
+        Side::Practice(persona),
         Arc::new(move |e| {
             let _ = tx.send(e);
         }),
@@ -113,7 +113,7 @@ fn main() {
                 // Silêncio: a resposta fecha.
                 now += 3_500;
                 session.tick(now);
-                analyzer.tick(now, session.heard_until(Source::Mic));
+                analyzer.tick(now, session.heard_until(Source::Mic), now);
             }
             AnalysisEvent::Suggestion { suggestion: s } => {
                 print!("  · {} [{}] {}", s.slot, s.kind, s.question);
