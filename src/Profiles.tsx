@@ -34,6 +34,11 @@ Linguagens, ferramentas, idiomas.
 ## Pontos a melhorar
 O que você ainda não domina (o app usa isso pra não inventar que você domina).
 
+## Jeito de falar
+Como você fala de verdade: formal ou solto, frases curtas ou longas, expressões e vícios que
+você usa ("então", "basicamente", "a gente"). Cole 2 ou 3 frases suas, do jeito que sairiam
+na fala. As respostas sugeridas imitam esse jeito.
+
 ## Perguntas pra fazer
 - O que você quer saber da empresa.
 

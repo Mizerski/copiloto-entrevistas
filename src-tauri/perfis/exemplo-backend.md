@@ -37,6 +37,11 @@ Kotlin, Java, Spring Boot, Kafka, Postgres, MySQL, Docker, Kubernetes básico, G
 ## Pontos a melhorar
 Nunca liderei time formalmente; mentorei dois juniores. Inglês intermediário (leio bem, converso devagar).
 
+## Jeito de falar
+Falo de forma direta e meio informal, uso "a gente" no lugar de "nós" e começo explicação com "então". Exemplos:
+- "Então, o problema era que o evento chegava duas vezes, e a gente cobrava duas vezes."
+- "Eu não liderei, quem liderou foi meu gestor, mas os consumidores eram comigo."
+
 ## Perguntas pra fazer
 - Como funciona o plantão e quantos incidentes por mês?
 - Como o time decide arquitetura?

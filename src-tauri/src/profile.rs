@@ -12,6 +12,7 @@
 //! ### Título da história
 //! Situação: ... Ação: ... Resultado: ...
 //! ## Habilidades
+//! ## Jeito de falar
 //! ## Perguntas pra fazer
 //! ## Termos
 //! ```
@@ -110,6 +111,9 @@ jargão pelo efeito no negócio (em vez de \"idempotência no Postgres\", \"fiz 
 reconhecer o pagamento repetido e não cobrar de novo\"). Se a pergunta for técnica, pode usar \
 os termos.
 - Frases curtas, que dá pra falar sem tropeçar. Nada de listas, aspas ou parênteses.
+- Se o perfil tem a seção Jeito de falar, escreva como essa pessoa fala: mesmo nível de \
+formalidade, mesmo tamanho de frase, as expressões e vícios dela, imitando os exemplos. A fala \
+tem que soar como ela, não como texto de IA. Sem a seção, português falado neutro.
 
 Regras:
 - Use só o que está no perfil e no que a pessoa já disse. Nunca invente experiência, número, \
