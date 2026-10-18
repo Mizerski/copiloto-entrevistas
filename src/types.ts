@@ -42,24 +42,11 @@ export type SessionEvent =
   | { kind: "segment"; segment: Segment }
   | { kind: "finished"; sessionId: number; durationMs: number; echoes: number };
 
-export type Level = "none" | "partial" | "strong";
-
-export type CoverageItem = { competency: string; level: Level; evidence: string; atMs: number };
-
 export type Card = { id: number; tMs: number; kind: string; text: string; priority: string };
 
 export type Quote = { text: string; atMs: number | null };
 
-export type BalloonSlot =
-  | "aprofundar"
-  | "checar"
-  | "avancar"
-  | "faltou"
-  | "cuidado"
-  | "estrutura"
-  | "responda"
-  | "historia"
-  | "atencao";
+export type BalloonSlot = "responda" | "historia" | "atencao";
 
 export type Suggestion = {
   id: number;
@@ -68,34 +55,19 @@ export type Suggestion = {
   kind: string;
   question: string;
   why: string;
-  /** Só em contradição. `atMs` nulo: o trecho é do currículo. */
+  /** Só em contradição. `atMs` nulo: o trecho é do perfil. */
   earlier: Quote | null;
   now: Quote | null;
   latencyMs: number;
 };
 
 export type AnalysisEvent =
-  | { kind: "card"; card: Card }
   | { kind: "suggestion"; suggestion: Suggestion }
   | { kind: "suggestionUsed"; slot: BalloonSlot; id: number }
-  | { kind: "interviewerThinking" }
-  | { kind: "interviewerSays"; text: string; end: boolean }
-  | { kind: "coverage"; items: CoverageItem[] }
   | { kind: "status"; state: string; message: string | null; latencyMs: number | null };
 
 export type Mark = { id: number; tMs: number; kind: "mark" | "pause" | "resume"; note: string | null };
 
-export type Competency = { name: string; description: string; strong: string; weak: string };
-export type Block = { name: string; minutes: number | null; questions: string[] };
-export type Kit = {
-  title: string;
-  job: string;
-  competencies: Competency[];
-  blocks: Block[];
-  forbidden: string[];
-  terms: string[];
-  warnings: string[];
-};
 export type KitRow = { id: number; name: string; markdown: string; updatedAt: number };
 
 export type SessionSummary = {
@@ -157,14 +129,8 @@ export type LlmUsage = {
 };
 
 export const SOURCES: Source[] = ["mic", "sistema"];
-export const SOURCE_LABEL: Record<Source, string> = { mic: "Você", sistema: "Candidato" };
-/** No treino você é o candidato e a outra ponta é a IA. */
-export const PRACTICE_LABEL: Record<Source, string> = { mic: "Você", sistema: "Entrevistador (IA)" };
-
-export type Persona = { id: string; name: string; description: string };
-
-/** No modo candidato você responde e a chamada é o entrevistador. */
-export const CANDIDATE_LABEL: Record<Source, string> = { mic: "Você", sistema: "Entrevistador" };
+/** Você responde; a chamada é o entrevistador. */
+export const SOURCE_LABEL: Record<Source, string> = { mic: "Você", sistema: "Entrevistador" };
 
 export type ProfileInfo = {
   name: string;
@@ -174,30 +140,12 @@ export type ProfileInfo = {
   warnings: string[];
 };
 
-export const LEVEL_LABEL: Record<Level, string> = {
-  none: "sem evidência",
-  partial: "parcial",
-  strong: "forte",
-};
-
 export const CARD_LABEL: Record<string, string> = {
-  aprofundar: "Aprofundar",
-  vaga: "Resposta vaga",
-  contradicao: "Contradição",
-  nao_tocada: "Não explorada",
-  roteiro: "Roteiro",
-  faltou: "Faltou dizer",
-  cuidado: "Cuidado",
-  estrutura: "Estrutura",
-  plural: "Falou no plural",
   responda: "Responda",
   historia: "Se pedirem mais",
   atencao: "Atenção",
+  contradicao: "Contradição",
   duas_partes: "Duas partes",
   esclarecer: "Esclarecer",
   requisito: "Requisito da vaga",
-  curriculo: "Currículo",
-  indutiva: "Pergunta indutiva",
-  positivo: "Sinal forte",
-  proibida: "Pergunta proibida",
 };

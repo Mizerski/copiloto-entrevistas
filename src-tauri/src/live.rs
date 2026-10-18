@@ -6,11 +6,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::analysis::{AnalysisEvent, Analyzer, Candidate, Side};
+use crate::analysis::{AnalysisEvent, Analyzer};
 use crate::audio::{Capture, CaptureConfig, CaptureEvent, Input, Source};
 use crate::db::{Db, NewSession};
 use crate::deepgram::{self, DeepgramConfig, SttEvent};
-use crate::kit::Kit;
 use crate::llm::LlmClient;
 use crate::session::{Session, SessionEvent};
 
@@ -24,18 +23,18 @@ pub struct LiveConfig {
     pub wav_dir: Option<PathBuf>,
     /// `None` só captura, sem transcrever.
     pub deepgram: Option<DeepgramConfig>,
-    /// O que fica gravado na sessão (outro lado, kit, candidato).
+    /// O que fica gravado na sessão (outro lado, perfil).
     pub record: NewSession,
-    /// `None` desliga a análise. Com kit e sem LLM, só checa perguntas proibidas.
+    /// `None` desliga a análise (só transcreve).
     pub analysis: Option<AnalysisSetup>,
 }
 
 pub struct AnalysisSetup {
-    pub kit: Kit,
-    pub candidate: Candidate,
-    pub llm: Option<LlmClient>,
-    /// De que lado o app está (entrevistador, treino ou candidato).
-    pub side: Side,
+    pub llm: LlmClient,
+    /// O perfil de quem está sendo entrevistado, em Markdown.
+    pub profile: String,
+    /// A descrição da vaga, se houver.
+    pub job: String,
 }
 
 pub struct Listeners {
@@ -53,8 +52,6 @@ pub struct LiveSession {
     started_at: Instant,
     open_streams: Arc<AtomicUsize>,
     paused: Arc<AtomicBool>,
-    /// Treino: o microfone fica mudo enquanto a voz do entrevistador toca.
-    mic_muted: Arc<AtomicBool>,
 }
 
 impl LiveSession {
@@ -80,9 +77,8 @@ impl LiveSession {
                 session.id,
                 db.clone(),
                 setup.llm,
-                setup.kit,
-                &setup.candidate,
-                setup.side,
+                &setup.profile,
+                &setup.job,
                 listeners.on_analysis.clone(),
             );
             let _ = analyzer_slot.set(a.clone());
@@ -141,7 +137,6 @@ impl LiveSession {
         }
 
         let paused = Arc::new(AtomicBool::new(false));
-        let mic_muted = Arc::new(AtomicBool::new(false));
         let on_capture = listeners.on_capture;
         let capture = Capture::start(
             CaptureConfig {
@@ -152,12 +147,10 @@ impl LiveSession {
             },
             move |event| on_capture(event),
             {
-                let (paused, mic_muted) = (paused.clone(), mic_muted.clone());
+                let paused = paused.clone();
                 move |chunk| {
                     // Pausado, o áudio não sai do computador; a transcrição recebe silêncio.
-                    if paused.load(Ordering::Relaxed)
-                        || (chunk.source == Source::Mic && mic_muted.load(Ordering::Relaxed))
-                    {
+                    if paused.load(Ordering::Relaxed) {
                         return;
                     }
                     let stt = match chunk.source {
@@ -186,14 +179,10 @@ impl LiveSession {
                 let now = started_at.elapsed().as_millis() as u64;
                 ticking.tick(now);
                 if let Some(a) = &ticking_analyzer {
-                    let interviewer = match a.candidate_source() {
-                        Source::Mic => Source::Sistema,
-                        Source::Sistema => Source::Mic,
-                    };
                     a.tick(
                         now,
-                        ticking.heard_until(a.candidate_source()),
-                        ticking.heard_until(interviewer),
+                        ticking.heard_until(Source::Mic),
+                        ticking.heard_until(Source::Sistema),
                     );
                 }
             }
@@ -207,7 +196,6 @@ impl LiveSession {
             started_at,
             open_streams,
             paused,
-            mic_muted,
         })
     }
 
@@ -232,41 +220,9 @@ impl LiveSession {
         Ok(())
     }
 
-    /// Treino: a voz do entrevistador começou (`true`) ou terminou de tocar.
-    pub fn set_mic_muted(&self, muted: bool) {
-        self.mic_muted.store(muted, Ordering::SeqCst);
-    }
-
-    /// Treino: a fala do entrevistador terminou de tocar; entra na transcrição como a
-    /// outra ponta.
-    pub fn practice_spoken(&self, text: &str, duration_ms: u64) {
-        let end = self.elapsed_ms();
-        self.session.on_transcript(
-            Source::Sistema,
-            text,
-            true,
-            end.saturating_sub(duration_ms),
-            end,
-            0,
-        );
-    }
-
-    /// Treino: pula pra próxima fala do entrevistador.
-    pub fn practice_next(&self) {
-        if let Some(a) = &self.analyzer {
-            a.practice_next(self.elapsed_ms());
-        }
-    }
-
     pub fn use_suggestion(&self, id: i64) {
         if let Some(a) = &self.analyzer {
             a.use_suggestion(id);
-        }
-    }
-
-    pub fn set_block(&self, name: String, minutes: Option<u32>) {
-        if let Some(a) = &self.analyzer {
-            a.set_block(name, minutes, self.elapsed_ms());
         }
     }
 

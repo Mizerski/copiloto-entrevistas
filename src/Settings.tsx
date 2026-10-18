@@ -7,8 +7,8 @@ import { Field, Picker, Section, type Option } from "./ui";
 import type { LlmSettings, LlmUsage, Provider, Slot } from "./types";
 
 const SLOTS = {
-  live: { title: "Análise ao vivo", hint: "Roda a cada resposta do candidato. Velocidade importa mais." },
-  notes: { title: "Notas pós-entrevista", hint: "Roda uma vez no fim. Qualidade importa mais." },
+  live: { title: "Respostas ao vivo", hint: "Roda a cada pergunta do entrevistador. Velocidade importa mais." },
+  notes: { title: "Parecer pós-entrevista", hint: "Roda uma vez no fim. Qualidade importa mais." },
 } as const;
 type SlotName = keyof typeof SLOTS;
 
@@ -239,7 +239,7 @@ export function Settings({ onLog }: { onLog: (line: string) => void }) {
   }
 
   async function deleteEverything() {
-    const ok = await ask("Apagar todas as sessões, transcrições e notas? Kits e chaves ficam. Não dá pra desfazer.", {
+    const ok = await ask("Apagar todas as sessões, transcrições e notas? Perfis e chaves ficam. Não dá pra desfazer.", {
       kind: "warning",
       okLabel: "Apagar tudo",
     });

@@ -133,9 +133,8 @@ pub async fn generate(db: &Arc<Db>, llm: &LlmClient, session_id: i64) -> Result<
         Source::Sistema
     };
     let transcript = transcript_text(&segments, &marks, candidate);
-    let system = if detail.practice_persona.is_some() {
-        format!("{SYSTEM}{}", crate::practice::NOTES_NOTE)
-    } else if candidate_side {
+    // Sessões antigas de treino também foram do lado de quem respondeu.
+    let system = if detail.practice_persona.is_some() || candidate_side {
         format!("{SYSTEM}{}", crate::profile::NOTES_NOTE)
     } else {
         SYSTEM.to_string()

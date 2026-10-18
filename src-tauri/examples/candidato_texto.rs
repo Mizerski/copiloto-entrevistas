@@ -10,10 +10,9 @@ use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use copiloto_entrevistas_lib::analysis::{AnalysisEvent, Analyzer, Candidate, Side};
+use copiloto_entrevistas_lib::analysis::{AnalysisEvent, Analyzer};
 use copiloto_entrevistas_lib::audio::Source;
 use copiloto_entrevistas_lib::db::{Db, NewSession};
-use copiloto_entrevistas_lib::kit::Kit;
 use copiloto_entrevistas_lib::llm::{LlmClient, Provider, Slot};
 use copiloto_entrevistas_lib::session::{Session, SessionEvent};
 use copiloto_entrevistas_lib::{profile, secrets};
@@ -67,14 +66,9 @@ fn main() {
     let analyzer = Analyzer::new(
         session.id,
         db.clone(),
-        Some(llm),
-        Kit::default(),
-        &Candidate {
-            name,
-            resume: profile_md,
-            checkpoints: String::new(),
-        },
-        Side::Candidate { job },
+        llm,
+        &profile_md,
+        &job,
         Arc::new(move |e| {
             let _ = tx.send(e);
         }),

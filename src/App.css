@@ -78,7 +78,7 @@ body,
 }
 
 .meter-label {
-  width: 64px;
+  width: 84px;
   flex: none;
 }
 
@@ -229,41 +229,6 @@ body,
   }
 }
 
-/* Treino: o que o entrevistador simulado disse. Enquanto ele pensa, a fala anterior
-   fica apagada. */
-.interviewer-card {
-  box-shadow: inset 3px 0 0 var(--blue-9), var(--base-card-surface-box-shadow);
-}
-
-.interviewer-card p {
-  margin: 0;
-  line-height: var(--line-height-3);
-}
-
-.interviewer-old {
-  color: var(--gray-10);
-}
-
-/* Cobertura */
-
-.coverage-dot {
-  flex: none;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  border: 2px solid var(--gray-7);
-}
-
-.coverage-row.partial .coverage-dot {
-  border-color: var(--orange-9);
-  background: linear-gradient(90deg, var(--orange-9) 50%, transparent 50%);
-}
-
-.coverage-row.strong .coverage-dot {
-  border-color: var(--green-9);
-  background: var(--green-9);
-}
-
 /* Listas e detalhes */
 
 .disclosure summary {
@@ -307,11 +272,13 @@ ul.plain {
   flex: none;
 }
 
-.kit-editor textarea {
-  min-height: 300px;
-  font-family: var(--code-font-family);
-  font-size: var(--font-size-1);
-  line-height: var(--line-height-2);
+/* Perfil: salvar sempre à mão no fim da tela, mesmo com o formulário longo. */
+.profile-actions {
+  position: sticky;
+  bottom: 0;
+  padding: var(--space-2) 0;
+  background: var(--color-background);
+  border-top: 1px solid var(--gray-a4);
 }
 
 .onboarding {

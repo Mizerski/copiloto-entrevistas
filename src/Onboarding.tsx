@@ -95,17 +95,17 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       {step === 0 && (
         <Flex direction="column" gap="3">
           <Heading size="6" weight="medium">
-            O Copiloto ajuda quem entrevista
+            O Copiloto ajuda você na entrevista
           </Heading>
           <Text as="p" size="3" color="gray">
-            Durante uma entrevista no Teams, Meet ou Zoom, ele transcreve você e o candidato, mostra o que já foi
-            coberto do roteiro e sugere o que aprofundar. No fim, monta um rascunho de parecer com trechos da
-            conversa.
+            Durante uma entrevista no Teams, Meet ou Zoom, ele transcreve você e o entrevistador e, a cada
+            pergunta, mostra uma resposta pronta tirada do seu perfil, do seu jeito de falar. No fim, monta um
+            parecer do que você pode melhorar.
           </Text>
           <Section>
-            <Text size="2">O candidato precisa ser avisado de que a conversa será transcrita. O app traz um texto pronto.</Text>
+            <Text size="2">Muitas empresas não permitem assistência durante a entrevista: confirme antes de usar.</Text>
             <Text size="2">Tudo fica neste computador. Cada serviço usado é pago com a sua própria chave.</Text>
-            <Text size="2">O app não decide nada: as notas são sugestões, a avaliação é sua.</Text>
+            <Text size="2">As respostas saem só do seu perfil: quanto mais completo, melhor.</Text>
           </Section>
         </Flex>
       )}
@@ -150,8 +150,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
       {step === 2 && llm && (
         <Section
-          title="Análise (opcional)"
-          description="Sem LLM o app transcreve, mostra o roteiro e avisa de perguntas proibidas. Com LLM, mostra cobertura, sugestões e gera o parecer. Outros provedores e modelos locais ficam em Configurações."
+          title="Respostas"
+          description="A LLM escreve as respostas e o parecer. Outros provedores e modelos locais ficam em Configurações."
         >
           <KeyField
             label="Chave da Anthropic"
@@ -199,18 +199,17 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             </Text>
           )}
           <Text size="1" color="gray">
-            Use fone nas entrevistas: sem ele, o microfone capta o candidato saindo da caixa de som. O app descarta
-            esse eco, mas com fone a transcrição fica mais limpa.
+            Use fone nas entrevistas: sem ele, o microfone capta o entrevistador saindo da caixa de som. O app
+            descarta esse eco, mas com fone a transcrição fica mais limpa.
           </Text>
         </Section>
       )}
 
       {step === 4 && (
         <Section title="Pronto">
-          <Text size="2">Monte ou ajuste um kit na aba Kits; já vêm dois exemplos.</Text>
-          <Text size="2">Antes de iniciar, avise o candidato. O texto pronto fica na tela da sessão.</Text>
+          <Text size="2">Preencha seu perfil na aba Perfil: experiências, histórias e o seu jeito de falar.</Text>
           <Text size="2">Ctrl+Shift+M marca um momento importante, mesmo com a chamada em primeiro plano.</Text>
-          <Text size="2">Se o candidato pedir, pause a transcrição; o áudio para de sair do computador.</Text>
+          <Text size="2">Pause a transcrição quando quiser; o áudio para de sair do computador.</Text>
         </Section>
       )}
 

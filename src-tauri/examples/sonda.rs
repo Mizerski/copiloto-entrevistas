@@ -11,15 +11,13 @@
 //!     --esperado-mic X.txt   o mesmo pra você (mostra se o eco vazou)
 //!     --termos "a,b"         termos difíceis pra Deepgram
 //!     --sem-transcricao      só captura
-//!     --kit X.md             kit da entrevista (liga cobertura e perguntas proibidas)
+//!     --perfil X.md          seu perfil (liga os balões de resposta; precisa de LLM)
+//!     --vaga "texto"         descrição da vaga
 //!     --llm-url URL          LLM compatível com OpenAI pra análise (ex.: o `llm_falso`)
 //!     --llm-modelo M         modelo dessa LLM (chave opcional em LLM_API_KEY)
 //!     --notas                gera as notas pós-entrevista no fim (precisa de LLM)
 //!     --anthropic            LLM = Claude com a configuração padrão do app e a chave salva
 //!                            pelo app (--llm-modelo troca o modelo)
-//!     --candidato NOME       nome do candidato
-//!     --cv X.txt             currículo do candidato
-//!     --pontos "texto"       pontos a checar
 //!
 //! A chave da Deepgram vem de DEEPGRAM_API_KEY ou, se não definida, do Credential
 //! Manager (a mesma que o app salva). A sessão vai pra um banco em memória.
@@ -30,14 +28,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use copiloto_entrevistas_lib::analysis::{AnalysisEvent, Candidate, Side};
+use copiloto_entrevistas_lib::analysis::AnalysisEvent;
 use copiloto_entrevistas_lib::audio::{self, CaptureEvent, Input, Source};
 use copiloto_entrevistas_lib::db::{Db, NewSession, Segment};
 use copiloto_entrevistas_lib::deepgram::{self, DeepgramConfig, SttEvent};
-use copiloto_entrevistas_lib::kit;
 use copiloto_entrevistas_lib::live::{AnalysisSetup, Listeners, LiveConfig, LiveSession};
 use copiloto_entrevistas_lib::llm::{LlmClient, Provider, Slot};
 use copiloto_entrevistas_lib::notes;
+use copiloto_entrevistas_lib::profile;
 use copiloto_entrevistas_lib::secrets;
 use copiloto_entrevistas_lib::session::{SessionEvent, words};
 
@@ -52,14 +50,12 @@ struct Args {
     expected_mic: Option<PathBuf>,
     keyterms: Vec<String>,
     no_stt: bool,
-    kit: Option<PathBuf>,
+    profile: Option<PathBuf>,
+    job: Option<String>,
     llm_url: Option<String>,
     llm_model: Option<String>,
     notes: bool,
     anthropic: bool,
-    candidate: Option<String>,
-    resume: Option<PathBuf>,
-    checkpoints: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -82,14 +78,12 @@ fn parse_args() -> Args {
                 args.keyterms = value().split(',').map(|t| t.trim().to_string()).collect()
             }
             "--sem-transcricao" => args.no_stt = true,
-            "--kit" => args.kit = Some(value().into()),
+            "--perfil" => args.profile = Some(value().into()),
+            "--vaga" => args.job = Some(value()),
             "--llm-url" => args.llm_url = Some(value()),
             "--llm-modelo" => args.llm_model = Some(value()),
             "--notas" => args.notes = true,
             "--anthropic" => args.anthropic = true,
-            "--candidato" => args.candidate = Some(value()),
-            "--cv" => args.resume = Some(value().into()),
-            "--pontos" => args.checkpoints = Some(value()),
             other => panic!("opção desconhecida: {other}"),
         }
     }
@@ -135,19 +129,14 @@ fn main() {
         (None, false) => Some(Input::Microphone(None)),
     };
 
-    let kit_markdown = args
-        .kit
+    let profile_md = args
+        .profile
         .as_ref()
-        .map(|p| std::fs::read_to_string(p).expect("ler o kit"));
-    let kit = kit_markdown.as_deref().map(kit::parse);
-    if let Some(k) = &kit {
-        println!(
-            "Kit: {} ({} competências, {} blocos)",
-            k.title,
-            k.competencies.len(),
-            k.blocks.len()
-        );
-        for w in &k.warnings {
+        .map(|p| std::fs::read_to_string(p).expect("ler o perfil"));
+    let parsed = profile_md.as_deref().map(profile::parse);
+    if let Some(p) = &parsed {
+        println!("Perfil: {} ({} histórias)", p.name, p.stories.len());
+        for w in &p.warnings {
             println!("  aviso: {w}");
         }
     }
@@ -168,8 +157,8 @@ fn main() {
             return;
         }
         let mut keyterms = args.keyterms.clone();
-        if let Some(k) = &kit {
-            keyterms.extend(k.terms.iter().cloned());
+        if let Some(p) = &parsed {
+            keyterms.extend(p.terms.iter().cloned());
         }
         Some(DeepgramConfig {
             api_key,
@@ -207,15 +196,6 @@ fn main() {
         })
     };
     let llm = make_llm(false);
-    let candidate = Candidate {
-        name: args.candidate.clone().unwrap_or_default(),
-        resume: args
-            .resume
-            .as_ref()
-            .map(|p| std::fs::read_to_string(p).expect("ler o currículo"))
-            .unwrap_or_default(),
-        checkpoints: args.checkpoints.clone().unwrap_or_default(),
-    };
 
     let wav_dir = PathBuf::from("target/sonda");
     std::fs::create_dir_all(&wav_dir).unwrap();
@@ -263,9 +243,6 @@ fn main() {
                 other => println!("{other:?}"),
             }),
             on_analysis: Arc::new(|event| match event {
-                AnalysisEvent::Card { card } => {
-                    println!("    CARD [{}/{}] {}", card.kind, card.priority, card.text)
-                }
                 AnalysisEvent::Suggestion { suggestion: s } => {
                     println!(
                         "    BALÃO {} [{}] {} ({}; {} ms, fala até {})",
@@ -280,21 +257,6 @@ fn main() {
                 }
                 AnalysisEvent::SuggestionUsed { slot, id } => {
                     println!("    BALÃO {slot} usado (card {id})")
-                }
-                AnalysisEvent::InterviewerThinking => println!("    ENTREVISTADOR pensando"),
-                AnalysisEvent::InterviewerSays { text, end } => {
-                    println!(
-                        "    ENTREVISTADOR{}: {text}",
-                        if end { " (fim)" } else { "" }
-                    )
-                }
-                AnalysisEvent::Coverage { items } => {
-                    for c in items.iter().filter(|c| !c.evidence.is_empty()) {
-                        println!(
-                            "    COBERTURA {}: {:?} \"{}\"",
-                            c.competency, c.level, c.evidence
-                        );
-                    }
                 }
                 AnalysisEvent::Status {
                     state,
@@ -311,12 +273,15 @@ fn main() {
         }
     };
 
-    let analysis = kit.clone().map(|kit| AnalysisSetup {
-        kit,
-        candidate: candidate.clone(),
-        llm,
-        side: Side::Interviewer,
-    });
+    let analysis = match (&profile_md, llm) {
+        (Some(profile), Some(llm)) => Some(AnalysisSetup {
+            llm,
+            profile: profile.clone(),
+            job: args.job.clone().unwrap_or_default(),
+        }),
+        _ => None,
+    };
+    let analyzing = analysis.is_some();
     let live = LiveSession::start(
         LiveConfig {
             mic,
@@ -325,12 +290,9 @@ fn main() {
             deepgram: deepgram_config,
             record: NewSession {
                 other_side: Some("sonda".into()),
-                kit_name: kit.as_ref().map(|k| k.title.clone()),
-                kit_markdown,
-                candidate_name: Some(candidate.name.clone()).filter(|s| !s.is_empty()),
-                candidate_resume: Some(candidate.resume.clone()).filter(|s| !s.is_empty()),
-                candidate_checkpoints: Some(candidate.checkpoints.clone())
-                    .filter(|s| !s.is_empty()),
+                candidate_name: parsed.as_ref().map(|p| p.name.clone()),
+                candidate_resume: profile_md.clone(),
+                side: Some("candidato".into()),
                 ..Default::default()
             },
             analysis,
@@ -345,7 +307,7 @@ fn main() {
     std::thread::sleep(Duration::from_secs(seconds));
     tauri::async_runtime::block_on(live.stop());
     // Tempo pra última análise voltar.
-    if kit.is_some() {
+    if analyzing {
         std::thread::sleep(Duration::from_secs(3));
     }
 

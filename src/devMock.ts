@@ -4,46 +4,17 @@
 
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import backendKit from "../src-tauri/kits/backend-senior-pagamentos.md?raw";
-import behaviorKit from "../src-tauri/kits/comportamental-geral.md?raw";
-import type { Kit, KitRow, Segment, SessionFull } from "./types";
+import exampleProfile from "../src-tauri/perfis/exemplo-backend.md?raw";
+import type { KitRow, Segment, SessionFull } from "./types";
 
-const kits: KitRow[] = [
-  { id: 1, name: "Backend sênior · Pagamentos", markdown: backendKit, updatedAt: Date.now() },
-  { id: 2, name: "Entrevista comportamental · Geral", markdown: behaviorKit, updatedAt: Date.now() },
-];
-
-/** Versão simplificada do parser do Rust, suficiente pra demonstração. */
-function parseKit(markdown: string): Kit {
-  const kit: Kit = { title: "", job: "", competencies: [], blocks: [], forbidden: [], terms: [], warnings: [] };
-  let section = "";
-  for (const raw of markdown.split("\n")) {
-    const line = raw.trim();
-    if (line.startsWith("# ")) kit.title = line.slice(2);
-    else if (line.startsWith("## ")) section = line.slice(3).toLowerCase();
-    else if (line.startsWith("### ")) {
-      const name = line.slice(4);
-      if (section.startsWith("compet")) kit.competencies.push({ name, description: "", strong: "", weak: "" });
-      if (section === "roteiro") {
-        const m = name.match(/^(.*)\((\d+) min\)$/);
-        kit.blocks.push({ name: m ? m[1].trim() : name, minutes: m ? Number(m[2]) : null, questions: [] });
-      }
-    } else if (line.startsWith("- ") && section === "roteiro") kit.blocks[kit.blocks.length - 1]?.questions.push(line.slice(2));
-    else if (line.startsWith("Forte:")) kit.competencies[kit.competencies.length - 1].strong = line.slice(6).trim();
-    else if (line.startsWith("Fraco:")) kit.competencies[kit.competencies.length - 1].weak = line.slice(6).trim();
-    else if (section === "termos" && line) kit.terms.push(...line.split(",").map((t) => t.trim()));
-  }
-  if (!kit.competencies.length) kit.warnings.push("Nenhuma competência: o painel de cobertura fica vazio.");
-  return kit;
-}
+const profiles: KitRow[] = [{ id: 1, name: "Ana Souza", markdown: exampleProfile, updatedAt: Date.now() }];
 
 const script: [number, "mic" | "sistema", string][] = [
-  [0, "mic", "Me conta sobre um projeto difícil em que você trabalhou recentemente."],
-  [5_900, "sistema", "No meu último projeto eu fui responsável pela migração do processamento de pagamentos,"],
-  [10_400, "sistema", "para uma arquitetura orientada a eventos. A gente usava Kafka para publicar os eventos de transação,"],
-  [18_000, "sistema", "e cada consumidor precisava ser idempotente, porque o mesmo evento podia chegar duas vezes."],
-  [26_000, "mic", "E como vocês garantiam isso na prática?"],
-  [29_000, "sistema", "Eu propus guardar a chave de idempotência no Postgres com uma restrição de unicidade."],
+  [0, "sistema", "Oi Ana, tudo bem? Tá me ouvindo?"],
+  [3_000, "mic", "Tô te ouvindo bem, sim. E você, me ouve?"],
+  [6_000, "sistema", "Ótimo. Me conta de um problema difícil que você resolveu em pagamentos."],
+  [12_000, "mic", "Então, teve um caso no Pix em que o evento de confirmação chegava duas vezes,"],
+  [18_000, "mic", "e a gente acabava cobrando duas vezes o cliente."],
 ];
 
 let timers: number[] = [];
@@ -57,12 +28,7 @@ function seg(startMs: number, source: "mic" | "sistema", text: string): Segment 
 function playDemo() {
   timers.forEach(clearTimeout);
   timers = [];
-  const kit = parseKit(backendKit);
   const at = (ms: number, fn: () => void) => timers.push(window.setTimeout(fn, ms));
-  emit("analise", {
-    kind: "coverage",
-    items: kit.competencies.map((c) => ({ competency: c.name, level: "none", evidence: "", atMs: 0 })),
-  });
   const levels = window.setInterval(() => {
     emit("captura", { kind: "level", source: "mic", tMs: 0, rms: Math.random() * 0.05, peak: 0 });
     emit("captura", { kind: "level", source: "sistema", tMs: 0, rms: Math.random() * 0.1, peak: 0 });
@@ -75,50 +41,14 @@ function playDemo() {
       emit("sessao", { kind: "segment", segment: seg(t, source, text) });
     });
   });
-  at(5_000, () => {
-    emit("analise", { kind: "status", state: "analisando", message: null, latencyMs: null });
-  });
-  at(6_500, () => {
-    emit("analise", {
-      kind: "coverage",
-      items: kit.competencies.map((c, i) => ({
-        competency: c.name,
-        level: i === 0 ? "strong" : i === 1 ? "partial" : "none",
-        evidence: i < 2 ? "cada consumidor precisava ser idempotente" : "",
-        atMs: 18_000,
-      })),
-    });
-    const balloon = (id: number, slot: string, kind: string, question: string, why: string, extra = {}) =>
-      emit("analise", { kind: "suggestion", suggestion: { id, slot, tMs: 18_000, kind, question, why, earlier: null, now: null, latencyMs: 1900, ...extra } });
-    balloon(11, "aprofundar", "aprofundar", "Você falou que a gente usava Kafka. Qual foi exatamente a sua parte nessa migração?", "separar o papel dela do time");
-    balloon(12, "checar", "contradicao", "Me ajuda a entender: no currículo você liderou a migração, e agora contou que entrou na metade. Como foi?", "esclarecer liderança", {
-      earlier: { text: "Liderou a migração de pagamentos para eventos", atMs: null },
-      now: { text: "eu entrei no projeto quando ele já estava na metade", atMs: 16_000 },
-    });
-    balloon(13, "avancar", "nao_tocada", "Como você explicava o andamento da migração pro pessoal de negócio?", "comunicação ainda sem evidência");
-    emit("analise", { kind: "status", state: "ok", message: null, latencyMs: 1800 });
-  });
-  at(8_000, () => emit("analise", { kind: "card", card: { id: 3, tMs: 26_000, kind: "proibida", text: "Pergunta proibida (\"tem filhos\"). Mude de assunto.", priority: "alta" } }));
-}
-
-function playPractice() {
-  timers.forEach(clearTimeout);
-  timers = [];
-  const at = (ms: number, fn: () => void) => timers.push(window.setTimeout(fn, ms));
-  emit("analise", { kind: "interviewerThinking" });
-  at(1_200, () =>
-    emit("analise", {
-      kind: "interviewerSays",
-      text: "Oi, tudo bem? Vou te fazer algumas perguntas sobre a sua experiência com backend. Pra começar, me conta de um projeto difícil em que você trabalhou.",
-      end: false,
-    }),
-  );
-  at(3_000, () => {
-    const tip = (id: number, slot: string, kind: string, question: string, why: string) =>
-      emit("analise", { kind: "suggestion", suggestion: { id, slot, tMs: 20_000, kind, question, why, earlier: null, now: null, latencyMs: 1700 } });
-    tip(21, "faltou", "faltou", "Diga quanto a confirmação do Pix melhorou, com um número.", "mostrar resultado");
-    tip(22, "cuidado", "plural", "Você disse \"a gente fez\": conte qual foi a sua parte.", "separar você do time");
-    tip(23, "estrutura", "estrutura", "Feche com o que você aprendeu e faria diferente.", "fechar a resposta");
+  const balloon = (id: number, slot: string, kind: string, question: string, why: string, tMs: number, extra = {}) =>
+    emit("analise", { kind: "suggestion", suggestion: { id, slot, tMs, kind, question, why, earlier: null, now: null, latencyMs: 1600, ...extra } });
+  at(1_600, () => balloon(1, "responda", "responda", "Tô te ouvindo bem, sim. E você, me ouve?", "checagem de áudio", 0));
+  at(3_200, () => {
+    emit("analise", { kind: "suggestionUsed", slot: "responda", id: 1 });
+    balloon(2, "responda", "responda", "Então, teve um caso no Pix em que o evento de confirmação chegava duas vezes e a gente cobrava o cliente de novo. Eu propus guardar a chave de idempotência no Postgres, com restrição de unicidade, e escrevi o teste que reproduzia. Em duas semanas os casos de duplicidade foram a zero.", "história do Pix", 6_000);
+    balloon(3, "historia", "historia", "Se quiser mais um: no checkout da LojaFácil, o fechamento levava 2,1 segundos. Medi com tracing, tirei as chamadas síncronas ao estoque e ficou em 600 milissegundos.", "segundo exemplo", 6_000);
+    balloon(4, "atencao", "requisito", "A vaga pede consistência: feche dizendo como evitou cobrança dupla.", "ligar à vaga", 6_000);
   });
 }
 
@@ -129,26 +59,19 @@ const fullSession: SessionFull = {
     durationMs: 2_712_000,
     otherSide: "ms-teams.exe",
     interrupted: false,
-    kitName: "Backend sênior · Pagamentos",
-    kitMarkdown: backendKit,
+    kitName: null,
+    kitMarkdown: null,
     candidateName: "Ana Souza",
-    candidateResume: "Backend há 7 anos, Java e Kotlin. Liderou a migração de pagamentos para eventos.",
-    candidateCheckpoints: "Diz que liderou a migração",
-    coverageJson: JSON.stringify(
-      parseKit(backendKit).competencies.map((c, i) => ({
-        competency: c.name,
-        level: i < 2 ? "strong" : i === 2 ? "partial" : "none",
-        evidence: i < 3 ? "cada consumidor precisava ser idempotente" : "",
-        atMs: 18_000,
-      })),
-    ),
-    summary: "Candidata descreveu a migração de pagamentos para eventos com Kafka.",
+    candidateResume: exampleProfile,
+    candidateCheckpoints: null,
+    coverageJson: null,
+    summary: "Ana contou o caso do pagamento duplicado no Pix.",
     notesJson: null,
     practicePersona: null,
-    side: null,
+    side: "candidato",
   },
   segments: script.map(([t, s, text]) => seg(t, s, text)),
-  cards: [{ id: 1, tMs: 18_000, kind: "aprofundar", text: "Pergunte qual foi a parte dela na migração.", priority: "media" }],
+  cards: [],
   marks: [{ id: 1, tMs: 20_000, kind: "mark", note: null }],
   usage: { calls: 14, inputTokens: 42_000, outputTokens: 3_100, cachedTokens: 30_000 },
 };
@@ -166,12 +89,6 @@ export function installDevMock() {
             { pid: 4242, name: "ms-teams.exe", active: true },
             { pid: 5151, name: "chrome.exe", active: false },
           ];
-        case "list_kits":
-          return kits;
-        case "parse_kit":
-          return parseKit(String(a.markdown ?? ""));
-        case "save_kit":
-          return a.id ?? 99;
         case "deepgram_key_status":
           return "••••d3m0";
         case "llm_settings":
@@ -184,26 +101,14 @@ export function installDevMock() {
         case "test_llm":
           throw "salve a chave da Anthropic nas configurações";
         case "list_profiles":
-          return [{ id: 1, name: "Ana Souza", markdown: "# Ana Souza\n\n## Experiências\n\n### PagaJá · Backend sênior\n\n## Histórias\n\n### Pagamento duplicado no Pix\n", updatedAt: Date.now() }];
+          return profiles;
+        case "save_profile":
+          return a.id ?? 99;
         case "parse_profile":
-          return { name: "Ana Souza", experiences: ["PagaJá · Backend sênior"], stories: ["Pagamento duplicado no Pix"], terms: [], warnings: [] };
-        case "list_personas":
-          return [
-            { id: "tecnica", name: "Técnica e direta", description: "Vai direto ao ponto e pede detalhes, números e decisões." },
-            { id: "acolhedora", name: "Acolhedora (RH)", description: "Deixa à vontade e puxa histórias de comportamento." },
-            { id: "exigente", name: "Exigente", description: "Pressiona quando a resposta é vaga e cobra contradições." },
-          ];
-        case "set_mic_muted":
-        case "practice_spoken":
-        case "practice_next":
-          return null;
+          return { name: "Ana Souza", experiences: [], stories: [], terms: [], warnings: [] };
         case "start_session":
-          if ((a.request as { practice?: string } | undefined)?.practice) {
-            playPractice();
-            return { sessionId: 2, wavDir: null, kit: parseKit(backendKit), warnings: [] };
-          }
           playDemo();
-          return { sessionId: 1, wavDir: null, kit: parseKit(backendKit), warnings: [] };
+          return { sessionId: 1, wavDir: null };
         case "stop_session":
           timers.forEach(clearTimeout);
           return null;
@@ -218,9 +123,11 @@ export function installDevMock() {
               otherSide: "ms-teams.exe",
               interrupted: false,
               segments: 312,
-              kitName: "Backend sênior · Pagamentos",
+              kitName: null,
               candidateName: "Ana Souza",
               hasNotes: false,
+              practicePersona: null,
+              side: "candidato",
             },
           ];
         case "session_full":
@@ -229,24 +136,21 @@ export function installDevMock() {
           const notes = {
             generatedAt: Date.now(),
             model: "demonstração",
-            competencies: parseKit(backendKit).competencies.map((c, i) => ({
-              name: c.name,
-              suggestedScore: i === 0 ? 4 : i === 1 ? 3 : 0,
-              score: i === 0 ? 4 : i === 1 ? 3 : 0,
-              forEvidence:
-                i < 2
-                  ? [{ text: "Explicou idempotência com um caso real.", quote: "cada consumidor precisava ser idempotente", minute: "0:18" }]
-                  : [],
-              against: i === 1 ? [{ text: "Não disse o que fazia com mensagens que falhavam.", quote: "A gente usava Kafka", minute: "0:10" }] : [],
-              missing: i >= 2 ? "Não apareceu na conversa." : "",
+            competencies: ["Comunicação", "Clareza", "Exemplos concretos"].map((name, i) => ({
+              name,
+              suggestedScore: i === 2 ? 4 : 3,
+              score: i === 2 ? 4 : 3,
+              forEvidence: [{ text: "Contou um caso real com resultado.", quote: "a gente acabava cobrando duas vezes o cliente", minute: "0:18" }],
+              against: [],
+              missing: "",
               comment: "",
             })),
-            resumePoints: [{ point: "Liderou a migração de pagamentos", status: "nao_verificado", comment: "Falou sempre no plural." }],
-            nextQuestions: ["Qual foi exatamente a sua parte na migração?", "Como vocês tratavam mensagens que falhavam?"],
-            summary: "Entrevista técnica sobre a migração de pagamentos para eventos.",
+            resumePoints: [],
+            nextQuestions: ["Prepare um número pro caso do checkout."],
+            summary: "Entrevista técnica; você contou o caso do Pix.",
             interviewerNotes: "",
             reviewed: false,
-            droppedQuotes: 1,
+            droppedQuotes: 0,
           };
           fullSession.detail.notesJson = JSON.stringify(notes);
           return new Promise((resolve) => setTimeout(() => resolve(notes), 800));

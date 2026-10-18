@@ -6,7 +6,6 @@ pub mod kit;
 pub mod live;
 pub mod llm;
 pub mod notes;
-pub mod practice;
 pub mod profile;
 pub mod secrets;
 pub mod session;
@@ -20,11 +19,9 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
-use analysis::{Candidate, Side};
 use audio::{AudioApp, Capture, CaptureConfig, Input, Microphone};
 use db::{Card, Db, KitRow, Mark, NewSession, Segment, SessionDetail, SessionSummary, UsageTotals};
 use deepgram::DeepgramConfig;
-use kit::Kit;
 use live::{AnalysisSetup, Listeners, LiveConfig, LiveSession};
 use llm::{LlmClient, Provider, Slot, Usage};
 
@@ -80,22 +77,10 @@ struct StartRequest {
     replay_file: Option<String>,
     other_side_label: Option<String>,
     save_wav: bool,
-    transcribe: bool,
     keyterms: Vec<String>,
-    kit_id: Option<i64>,
-    candidate_name: String,
-    candidate_resume: String,
-    candidate_checkpoints: String,
-    /// Chamar a LLM a cada resposta. Sem isso, o kit só serve pro roteiro e pras
-    /// perguntas proibidas.
-    analyze: bool,
-    /// Treino com entrevistador simulado: a persona escolhida.
-    #[serde(default)]
-    practice: Option<String>,
-    /// Modo candidato: o perfil de quem está sendo entrevistado.
-    #[serde(default)]
-    profile_id: Option<i64>,
-    /// Modo candidato: a descrição da vaga, colada.
+    /// O perfil de quem está sendo entrevistado.
+    profile_id: i64,
+    /// A descrição da vaga, colada.
     #[serde(default)]
     job_description: String,
 }
@@ -105,9 +90,6 @@ struct StartRequest {
 struct Started {
     session_id: i64,
     wav_dir: Option<String>,
-    kit: Option<Kit>,
-    /// Coisas que não impediram a sessão, mas a pessoa precisa saber.
-    warnings: Vec<String>,
 }
 
 #[tauri::command]
@@ -120,7 +102,6 @@ async fn start_session(
     if let Some(previous) = previous {
         previous.stop().await;
     }
-    let mut warnings = Vec::new();
     let wav_dir = if request.save_wav {
         let dir = app
             .path()
@@ -132,127 +113,44 @@ async fn start_session(
     } else {
         None
     };
-    let persona = match request.practice.as_deref() {
-        Some(id) => Some(practice::persona(id).ok_or("persona desconhecida")?),
-        None => None,
-    };
-    // No treino, a outra ponta é a voz do entrevistador simulado, que entra como texto.
     let sistema = match (request.replay_file, request.app_pid) {
-        _ if persona.is_some() => None,
         (Some(path), _) => Some(Input::File(path.into())),
         (None, Some(pid)) => Some(Input::App(pid)),
         (None, None) => None,
     };
 
-    let profile_row = request
-        .profile_id
-        .map(|id| state.db.get_profile(id))
-        .transpose()?;
-    let candidate_side = profile_row.is_some();
-    // Do lado do candidato não há kit: o que guia é o perfil e a vaga.
-    let kit_row = match request.kit_id {
-        Some(id) if !candidate_side => Some(state.db.get_kit(id)?),
-        _ => None,
-    };
-    let kit = kit_row.as_ref().map(|k| kit::parse(&k.markdown));
+    let profile_row = state.db.get_profile(request.profile_id)?;
+    let llm = make_llm(&state.db, "live")?;
 
-    let deepgram = if request.transcribe {
-        let api_key =
-            secrets::load(DEEPGRAM)?.ok_or("salve a chave da Deepgram antes de transcrever")?;
-        let mut keyterms: Vec<String> = request
-            .keyterms
-            .into_iter()
-            .filter(|t| !t.trim().is_empty())
-            .collect();
-        if let Some(k) = &kit {
-            keyterms.extend(k.terms.iter().cloned());
-        }
-        if let Some(p) = &profile_row {
-            keyterms.extend(profile::parse(&p.markdown).terms);
-        }
-        if !request.candidate_name.trim().is_empty() {
-            keyterms.push(request.candidate_name.trim().to_string());
-        }
-        keyterms.sort();
-        keyterms.dedup();
-        Some(DeepgramConfig {
-            api_key,
-            language: "pt-BR".into(),
-            keyterms,
-        })
-    } else {
-        None
-    };
+    let api_key =
+        secrets::load(DEEPGRAM)?.ok_or("salve a chave da Deepgram antes de começar")?;
+    let mut keyterms: Vec<String> = request
+        .keyterms
+        .into_iter()
+        .filter(|t| !t.trim().is_empty())
+        .collect();
+    keyterms.extend(profile::parse(&profile_row.markdown).terms);
+    keyterms.sort();
+    keyterms.dedup();
+    let deepgram = Some(DeepgramConfig {
+        api_key,
+        language: "pt-BR".into(),
+        keyterms,
+    });
 
-    let analysis = match &kit {
-        _ if candidate_side => {
-            let profile_row = profile_row.as_ref().unwrap();
-            let llm = make_llm(&state.db, "live").map_err(|e| format!("modo candidato: {e}"))?;
-            Some(AnalysisSetup {
-                kit: Kit::default(),
-                candidate: Candidate {
-                    name: profile_row.name.clone(),
-                    resume: profile_row.markdown.clone(),
-                    checkpoints: String::new(),
-                },
-                llm: Some(llm),
-                side: Side::Candidate {
-                    job: request.job_description.clone(),
-                },
-            })
-        }
-        Some(kit) => {
-            let llm = if persona.is_some() {
-                // Sem modelo não há entrevistador: o treino não começa.
-                Some(make_llm(&state.db, "live").map_err(|e| format!("treino: {e}"))?)
-            } else if request.analyze {
-                match make_llm(&state.db, "live") {
-                    Ok(llm) => Some(llm),
-                    Err(e) => {
-                        warnings.push(format!("Análise ao vivo desligada: {e}"));
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            Some(AnalysisSetup {
-                kit: kit.clone(),
-                candidate: Candidate {
-                    name: request.candidate_name.trim().to_string(),
-                    resume: request.candidate_resume.trim().to_string(),
-                    checkpoints: request.candidate_checkpoints.trim().to_string(),
-                },
-                llm,
-                side: match persona {
-                    Some(p) => Side::Practice(p),
-                    None => Side::Interviewer,
-                },
-            })
-        }
-        None if persona.is_some() => return Err("o treino precisa de um kit".into()),
-        None => None,
-    };
-
-    let non_empty = |s: String| Some(s.trim().to_string()).filter(|s| !s.is_empty());
-    let (candidate_name, candidate_resume) = match &profile_row {
-        // O perfil vira o "currículo" da sessão: o parecer confere os pontos dele.
-        Some(p) => (Some(p.name.clone()), Some(p.markdown.clone())),
-        None => (
-            non_empty(request.candidate_name),
-            non_empty(request.candidate_resume),
-        ),
-    };
     let record = NewSession {
         other_side: request.other_side_label,
-        kit_name: kit_row.as_ref().map(|k| k.name.clone()),
-        kit_markdown: kit_row.as_ref().map(|k| k.markdown.clone()),
-        candidate_name,
-        candidate_resume,
-        candidate_checkpoints: non_empty(request.candidate_checkpoints),
-        practice_persona: persona.map(|p| p.id.to_string()),
-        side: candidate_side.then(|| "candidato".to_string()),
+        // O perfil vira o "currículo" da sessão: o parecer confere os pontos dele.
+        candidate_name: Some(profile_row.name.clone()),
+        candidate_resume: Some(profile_row.markdown.clone()),
+        side: Some("candidato".to_string()),
+        ..Default::default()
     };
+    let analysis = Some(AnalysisSetup {
+        llm,
+        profile: profile_row.markdown,
+        job: request.job_description,
+    });
 
     let emitter = |event: &'static str| {
         let app = app.clone();
@@ -285,27 +183,12 @@ async fn start_session(
             }),
         },
     )?;
-    if let Some(a) = &live.analyzer {
-        let _ = app.emit(
-            "analise",
-            analysis::AnalysisEvent::Coverage {
-                items: a.coverage(),
-            },
-        );
-    }
-    if persona.is_some()
-        && let Some(a) = &live.analyzer
-    {
-        a.start_practice();
-    }
     let session_id = live.session.id;
     *state.live.lock().unwrap() = Some(live);
     set_recording(&app, true);
     Ok(Started {
         session_id,
         wav_dir: wav_dir.map(|d| d.display().to_string()),
-        kit,
-        warnings,
     })
 }
 
@@ -385,20 +268,7 @@ async fn set_paused(state: State<'_, AppState>, paused: bool) -> Result<(), Stri
         .set_paused(paused)
 }
 
-#[tauri::command]
-async fn set_block(
-    state: State<'_, AppState>,
-    name: String,
-    minutes: Option<u32>,
-) -> Result<(), String> {
-    let live = state.live.lock().unwrap();
-    live.as_ref()
-        .ok_or("nenhuma sessão em andamento")?
-        .set_block(name, minutes);
-    Ok(())
-}
-
-/// O entrevistador usou o balão (clicou nele).
+/// Clicou no balão.
 #[tauri::command]
 async fn use_suggestion(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let live = state.live.lock().unwrap();
@@ -438,44 +308,6 @@ async fn parse_profile(markdown: String) -> profile::Profile {
 async fn import_profile_file(state: State<'_, AppState>, path: String) -> Result<i64, String> {
     let markdown = std::fs::read_to_string(&path).map_err(|e| format!("não leu {path}: {e}"))?;
     state.db.save_profile(None, &markdown)
-}
-
-// Treino
-
-#[tauri::command]
-fn list_personas() -> Vec<practice::Persona> {
-    practice::PERSONAS.to_vec()
-}
-
-#[tauri::command]
-async fn set_mic_muted(state: State<'_, AppState>, muted: bool) -> Result<(), String> {
-    let live = state.live.lock().unwrap();
-    live.as_ref()
-        .ok_or("nenhuma sessão em andamento")?
-        .set_mic_muted(muted);
-    Ok(())
-}
-
-#[tauri::command]
-async fn practice_spoken(
-    state: State<'_, AppState>,
-    text: String,
-    duration_ms: u64,
-) -> Result<(), String> {
-    let live = state.live.lock().unwrap();
-    live.as_ref()
-        .ok_or("nenhuma sessão em andamento")?
-        .practice_spoken(&text, duration_ms);
-    Ok(())
-}
-
-#[tauri::command]
-async fn practice_next(state: State<'_, AppState>) -> Result<(), String> {
-    let live = state.live.lock().unwrap();
-    live.as_ref()
-        .ok_or("nenhuma sessão em andamento")?
-        .practice_next();
-    Ok(())
 }
 
 // Histórico
@@ -574,38 +406,6 @@ async fn delete_everything(state: State<'_, AppState>) -> Result<(), String> {
         return Err("pare a sessão antes".into());
     }
     state.db.delete_everything()
-}
-
-// Kits
-
-#[tauri::command]
-async fn list_kits(state: State<'_, AppState>) -> Result<Vec<KitRow>, String> {
-    state.db.list_kits()
-}
-
-#[tauri::command]
-async fn save_kit(
-    state: State<'_, AppState>,
-    id: Option<i64>,
-    markdown: String,
-) -> Result<i64, String> {
-    state.db.save_kit(id, &markdown)
-}
-
-#[tauri::command]
-async fn delete_kit(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    state.db.delete_kit(id)
-}
-
-#[tauri::command]
-async fn parse_kit(markdown: String) -> Kit {
-    kit::parse(&markdown)
-}
-
-#[tauri::command]
-async fn import_kit_file(state: State<'_, AppState>, path: String) -> Result<i64, String> {
-    let markdown = std::fs::read_to_string(&path).map_err(|e| format!("não leu {path}: {e}"))?;
-    state.db.save_kit(None, &markdown)
 }
 
 /// Grava texto num arquivo escolhido pela pessoa no diálogo de salvar.
@@ -797,17 +597,12 @@ pub fn run() {
             set_flag,
             mark_moment,
             set_paused,
-            set_block,
             use_suggestion,
-            list_personas,
             list_profiles,
             save_profile,
             delete_profile,
             parse_profile,
             import_profile_file,
-            set_mic_muted,
-            practice_spoken,
-            practice_next,
             list_sessions,
             session_full,
             delete_session,
@@ -817,11 +612,6 @@ pub fn run() {
             retention_days,
             set_retention_days,
             delete_everything,
-            list_kits,
-            save_kit,
-            delete_kit,
-            parse_kit,
-            import_kit_file,
             write_text_file,
             llm_settings,
             save_llm_slot,
