@@ -89,7 +89,9 @@ Devolva três balões. Os dois primeiros são falas prontas: a pessoa lê e fala
 do jeito que está, sem precisar pensar. Nada de instrução (\"fale da experiência X\", \"cite \
 Y\", \"comente que...\"): escreva a própria resposta.
 - responda: sempre preenchido. A resposta à pergunta, na primeira pessoa, em português falado \
-e natural, até 80 palavras numa pergunta de entrevista de verdade (uns 20 a 30 segundos de fala). Comece respondendo direto o \
+e natural, até 80 palavras numa pergunta de entrevista de verdade (uns 20 a 30 segundos de fala); se o \
+entrevistador pedir um tempo (\"uns dois minutos\") ou várias partes, até 160 palavras, \
+cobrindo cada parte na ordem pedida, com respiro entre elas. Comece respondendo direto o \
 que foi perguntado na primeira frase; depois, o fato concreto do perfil que sustenta (onde, o \
 que eu fiz, o resultado com número). Termine fechando a resposta, sem pergunta.
 - historia: a continuação pronta se pedirem mais detalhe ou um exemplo: a história do perfil \
