@@ -50,8 +50,25 @@ export function Transcript({ segments, partials, marks = [], follow, labels = SO
   // cruzada; esconder evita texto piscando que o filtro de eco vai descartar.
   const visiblePartials = SOURCES.filter((s) => partials?.[s] && !(s === "mic" && partials.sistema));
 
+  // Rola só a caixa da transcrição (scrollIntoView arrastava a página inteira) e só se
+  // quem lê já estava perto do fim: subir pra reler não é interrompido.
+  const box = useRef<HTMLElement | null>(null);
+  const atEnd = useRef(true);
   useEffect(() => {
-    if (follow) end.current?.scrollIntoView({ block: "end" });
+    let el = end.current?.parentElement ?? null;
+    while (el && !/(auto|scroll)/.test(getComputedStyle(el).overflowY)) el = el.parentElement;
+    box.current = el;
+    if (!el) return;
+    const onScroll = () => {
+      atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [items.length > 0]);
+
+  useEffect(() => {
+    const el = box.current;
+    if (follow && el && atEnd.current) el.scrollTop = el.scrollHeight;
   }, [follow, segments.length, marks.length, partials?.mic, partials?.sistema]);
 
   if (items.length === 0 && visiblePartials.length === 0) {
