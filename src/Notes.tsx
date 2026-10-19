@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ask, save } from "@tauri-apps/plugin-dialog";
-import { Badge, Button, Callout, Flex, Separator, Text, TextArea } from "@radix-ui/themes";
+import { Badge, Button, Callout, Flex, Heading, Separator, Text, TextArea } from "@radix-ui/themes";
 import { DownloadIcon, FileTextIcon, InfoCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
 import { formatDate } from "./format";
 import { Field, Picker, Section } from "./ui";
@@ -41,22 +41,34 @@ const STATUS: Record<string, { label: string; color: "green" | "red" | "gray" }>
 function EvidenceList({ title, items, color }: { title: string; items: Evidence[]; color: "green" | "red" }) {
   if (items.length === 0) return null;
   return (
-    <Flex direction="column" gap="1">
-      <Text size="1" weight="medium" color={color}>
+    <Flex direction="column" gap="2">
+      <Text size="2" weight="bold" color={color}>
         {title}
       </Text>
-      {items.map((e, i) => (
-        <Text key={i} as="p" size="2">
-          {e.text}{" "}
-          <Text color="gray" className="quote">
-            “{e.quote}”
-          </Text>{" "}
-          <Text size="1" color="gray" className="tabular">
-            {e.minute}
-          </Text>
-        </Text>
-      ))}
+      <ul className="evidence">
+        {items.map((e, i) => (
+          <li key={i}>
+            <Text as="p" size="3">
+              {e.text}
+            </Text>
+            <Text as="p" size="2" color="gray" className="quote">
+              “{e.quote}”{" "}
+              <Text size="1" className="tabular minute">
+                {e.minute}
+              </Text>
+            </Text>
+          </li>
+        ))}
+      </ul>
     </Flex>
+  );
+}
+
+function Heading2({ children }: { children: React.ReactNode }) {
+  return (
+    <Heading as="h3" size="4" weight="bold" mt="2">
+      {children}
+    </Heading>
   );
 }
 
@@ -223,18 +235,19 @@ export function Notes({ session, onChanged }: { session: SessionFull; onChanged:
         </Callout.Root>
       )}
       {notes.summary && (
-        <Text as="p" size="2">
-          {notes.summary}
-        </Text>
+        <>
+          <Heading2>Resumo</Heading2>
+          <Text as="p" size="3" className="reading">
+            {notes.summary}
+          </Text>
+        </>
       )}
 
       {notes.competencies.map((c, i) => (
         <Flex key={c.name} direction="column" gap="2">
           <Separator size="4" />
           <Flex align="center" justify="between" gap="2">
-            <Text size="2" weight="medium">
-              {c.name}
-            </Text>
+            <Heading2>{c.name}</Heading2>
             <div className="no-print score-picker">
               <Picker
                 value={String(c.score)}
@@ -254,8 +267,8 @@ export function Notes({ session, onChanged }: { session: SessionFull; onChanged:
           <EvidenceList title="A favor" items={c.forEvidence} color="green" />
           <EvidenceList title="Contra" items={c.against} color="red" />
           {c.missing && (
-            <Text size="1" color="gray">
-              Sem evidência: {c.missing}
+            <Text as="p" size="2" color="gray">
+              <Text weight="bold">Sem evidência:</Text> {c.missing}
             </Text>
           )}
           <TextArea
@@ -276,17 +289,15 @@ export function Notes({ session, onChanged }: { session: SessionFull; onChanged:
       {notes.resumePoints.length > 0 && (
         <Flex direction="column" gap="2">
           <Separator size="4" />
-          <Text size="2" weight="medium">
-            Currículo e pontos a checar
-          </Text>
+          <Heading2>Currículo e pontos a checar</Heading2>
           {notes.resumePoints.map((p, i) => (
             <Flex key={i} gap="2" align="start">
               <Badge variant="soft" color={STATUS[p.status]?.color ?? "gray"} style={{ flexShrink: 0 }}>
                 {STATUS[p.status]?.label ?? p.status}
               </Badge>
-              <Text size="2">
+              <Text size="3">
                 {p.point}.{" "}
-                <Text color="gray" size="2">
+                <Text color="gray" size="3">
                   {p.comment}
                 </Text>
               </Text>
@@ -298,13 +309,11 @@ export function Notes({ session, onChanged }: { session: SessionFull; onChanged:
       {notes.nextQuestions.length > 0 && (
         <Flex direction="column" gap="2">
           <Separator size="4" />
-          <Text size="2" weight="medium">
-            Perguntas pra próxima etapa
-          </Text>
-          <ul className="plain">
+          <Heading2>Perguntas pra próxima etapa</Heading2>
+          <ul className="plain reading">
             {notes.nextQuestions.map((q, i) => (
               <li key={i}>
-                <Text size="2">{q}</Text>
+                <Text size="3">{q}</Text>
               </li>
             ))}
           </ul>

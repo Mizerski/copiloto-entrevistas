@@ -128,4 +128,9 @@ pub fn answer_schema() -> Value {
 pub const NOTES_NOTE: &str = "\n\nQuem vai ler este parecer é a própria pessoa entrevistada, \
 que usou o app do lado dela numa entrevista real: escreva as frases das evidências falando com \
 ela (\"você\"). Em perguntas pra próxima etapa, liste o que ela deve preparar melhor pras \
-próximas entrevistas.";
+próximas entrevistas.
+
+Escreva simples, como um colega que assistiu à entrevista explicaria depois: frases curtas e \
+diretas, uma ideia por frase. Use termo técnico só quando ele é o próprio ponto (o nome de uma \
+configuração que faltou citar, por exemplo) e, fora isso, diga com palavras comuns o que \
+aconteceu. Nada de jargão de avaliação nem frase de efeito.";
