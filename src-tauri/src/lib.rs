@@ -268,16 +268,6 @@ async fn set_paused(state: State<'_, AppState>, paused: bool) -> Result<(), Stri
         .set_paused(paused)
 }
 
-/// Clicou no balão.
-#[tauri::command]
-async fn use_suggestion(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let live = state.live.lock().unwrap();
-    live.as_ref()
-        .ok_or("nenhuma sessão em andamento")?
-        .use_suggestion(id);
-    Ok(())
-}
-
 // Perfis de candidato
 
 #[tauri::command]
@@ -597,7 +587,6 @@ pub fn run() {
             set_flag,
             mark_moment,
             set_paused,
-            use_suggestion,
             list_profiles,
             save_profile,
             delete_profile,

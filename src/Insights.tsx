@@ -1,97 +1,101 @@
-// Os balões da sessão ao vivo: o que responder ao entrevistador, tirado do seu perfil.
+// A resposta da sessão ao vivo: uma fala pronta por pergunta do entrevistador, com
+// navegação entre as perguntas e a opção de acompanhar sempre a mais nova.
 
-import { Card, Flex, Text } from "@radix-ui/themes";
+import { useState } from "react";
+import { Badge, Button, Card, Flex, IconButton, Switch, Text } from "@radix-ui/themes";
+import { ChevronLeftIcon, ChevronRightIcon } from "@radix-ui/react-icons";
 import { formatClock } from "./format";
-import { CARD_LABEL, type BalloonSlot, type Suggestion } from "./types";
+import type { Answer } from "./types";
 
-type SlotConfig = { slot: BalloonSlot; label: string; color: "orange" | "red" | "blue" };
+/** As últimas palavras da pergunta, pra lembrar do que se trata. */
+function tail(text: string, words = 28) {
+  const all = text.split(/\s+/).filter(Boolean);
+  return all.length > words ? `…${all.slice(-words).join(" ")}` : all.join(" ");
+}
 
-const SLOTS: SlotConfig[] = [
-  { slot: "responda", label: "Responda", color: "orange" },
-  { slot: "historia", label: "Se pedirem mais", color: "blue" },
-  { slot: "atencao", label: "Atenção", color: "red" },
-];
-
-type BalloonsProps = {
-  suggestions: Partial<Record<BalloonSlot, Suggestion>>;
+type Props = {
+  /** Uma por pergunta, na ordem da entrevista. */
+  answers: Answer[];
+  /** O entrevistador já falou, mas ainda não chegou resposta. */
   waiting: boolean;
-  onUse: (s: Suggestion) => void;
 };
 
-/** Três balões fixos, cada um com uma função. Clicar dispensa. */
-export function Balloons({ suggestions, waiting, onUse }: BalloonsProps) {
+export function AnswerFeed({ answers, waiting }: Props) {
+  const [follow, setFollow] = useState(true);
+  const [index, setIndex] = useState(0);
+
+  const last = answers.length - 1;
+  const current = follow ? last : Math.min(index, last);
+  const answer = answers[current];
+  const behind = !follow && current < last;
+
+  function go(to: number) {
+    setIndex(Math.max(0, Math.min(last, to)));
+    setFollow(false);
+  }
+
+  function toggleFollow(value: boolean) {
+    setFollow(value);
+    if (!value) setIndex(last);
+  }
+
   return (
-    <Flex direction="column" gap="2">
-      {SLOTS.map(({ slot, label, color }) => {
-        const s = suggestions[slot];
-        // O balão vermelho só fica vermelho quando é contradição; o resto é âmbar.
-        const tone = color === "red" && s?.kind !== "contradicao" ? "amber" : color;
-        if (!s) {
-          return (
-            <Card key={slot} size="1" className="hint-card gray balloon empty">
-              <Text size="1" weight="medium" color="gray">
-                {label}
-              </Text>
-              <Text size="1" color="gray" ml="2">
-                {waiting ? "ouvindo…" : "aparece quando o entrevistador perguntar"}
-              </Text>
-            </Card>
-          );
-        }
-        return (
-          <Card
-            key={slot}
-            size="1"
-            className={`hint-card ${tone} balloon`}
-            role="button"
-            tabIndex={0}
-            title="Dispensar"
-            onClick={() => onUse(s)}
-            onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onUse(s)}
-          >
-            <Flex align="center" gap="2" mb="1">
-              <Text size="1" weight="medium" color={tone}>
-                {label}
-              </Text>
-              {s.kind !== slot && (
-                <Text size="1" color="gray">
-                  {CARD_LABEL[s.kind] ?? s.kind}
-                </Text>
-              )}
-              <Text size="1" color="gray" className="tabular" ml="auto">
-                {formatClock(s.tMs)}
-              </Text>
-            </Flex>
-            {/* A continuação é texto pra ler em voz alta, sem peso. */}
-            <Text
-              as="p"
-              size="3"
-              weight={s.slot === "historia" ? "regular" : "medium"}
-              key={s.id}
-              className="balloon-text"
-            >
-              {s.question}
+    <Card size="2" className="answer-card">
+      <Flex direction="column" gap="2">
+        <Flex align="center" gap="2">
+          <Text size="2" weight="medium" color="orange">
+            Responda
+          </Text>
+          {answer && (
+            <Text size="1" color="gray" className="tabular">
+              {formatClock(answer.tMs)}
             </Text>
-            {s.earlier && s.now && (
-              <Flex direction="column" gap="1" mt="2" className="contradiction">
-                <Text size="1" color="gray">
-                  {s.earlier.atMs === null ? "No perfil" : `Aos ${formatClock(s.earlier.atMs)}`}:{" "}
-                  <span className="quote">“{s.earlier.text}”</span>
-                </Text>
-                <Text size="1" color="gray">
-                  Agora{s.now.atMs !== null ? ` (${formatClock(s.now.atMs)})` : ""}:{" "}
-                  <span className="quote">“{s.now.text}”</span>
-                </Text>
-              </Flex>
-            )}
-            {s.why && !s.earlier && (
-              <Text as="p" size="1" color="gray" mt="1">
-                {s.why}
-              </Text>
-            )}
-          </Card>
-        );
-      })}
-    </Flex>
+          )}
+          <Flex align="center" gap="1" ml="auto">
+            <IconButton size="1" variant="soft" color="gray" aria-label="Resposta anterior" disabled={current <= 0} onClick={() => go(current - 1)}>
+              <ChevronLeftIcon />
+            </IconButton>
+            <Text size="1" color="gray" className="tabular answer-count">
+              {answers.length ? `${current + 1} de ${answers.length}` : "0 de 0"}
+            </Text>
+            <IconButton size="1" variant="soft" color="gray" aria-label="Próxima resposta" disabled={current >= last} onClick={() => go(current + 1)}>
+              <ChevronRightIcon />
+            </IconButton>
+          </Flex>
+          <Text as="label" size="1" color="gray">
+            <Flex gap="1" align="center">
+              <Switch size="1" checked={follow} onCheckedChange={toggleFollow} />
+              Acompanhar
+            </Flex>
+          </Text>
+        </Flex>
+
+        {answer ? (
+          <>
+            <Text as="p" size="1" color="gray" className="answer-question">
+              {tail(answer.question)}
+            </Text>
+            <Text as="p" size="4" weight="medium" className="balloon-text" key={`${answer.turn}-${answer.text.length}`}>
+              {answer.text}
+            </Text>
+          </>
+        ) : (
+          <Text size="2" color="gray">
+            {waiting ? "ouvindo…" : "A resposta aparece quando o entrevistador perguntar."}
+          </Text>
+        )}
+
+        {behind && (
+          <Flex align="center" gap="2">
+            <Badge color="orange" variant="soft">
+              {last - current === 1 ? "1 pergunta nova" : `${last - current} perguntas novas`}
+            </Badge>
+            <Button size="1" variant="soft" onClick={() => toggleFollow(true)}>
+              Ir pra atual
+            </Button>
+          </Flex>
+        )}
+      </Flex>
+    </Card>
   );
 }

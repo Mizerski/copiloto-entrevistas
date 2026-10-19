@@ -243,20 +243,14 @@ fn main() {
                 other => println!("{other:?}"),
             }),
             on_analysis: Arc::new(|event| match event {
-                AnalysisEvent::Suggestion { suggestion: s } => {
+                AnalysisEvent::Answer { answer: a } => {
                     println!(
-                        "    BALÃO {} [{}] {} ({}; {} ms, fala até {})",
-                        s.slot, s.kind, s.question, s.why, s.latency_ms, s.t_ms
-                    );
-                    if let (Some(a), Some(b)) = (&s.earlier, &s.now) {
-                        println!(
-                            "      antes {:?}: {} | agora {:?}: {}",
-                            a.at_ms, a.text, b.at_ms, b.text
-                        );
-                    }
-                }
-                AnalysisEvent::SuggestionUsed { slot, id } => {
-                    println!("    BALÃO {slot} usado (card {id})")
+                        "    RESPOSTA {} ({} ms, pergunta até {}): {}",
+                        a.turn + 1,
+                        a.latency_ms,
+                        a.t_ms,
+                        a.text
+                    )
                 }
                 AnalysisEvent::Status {
                     state,

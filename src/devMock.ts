@@ -41,15 +41,18 @@ function playDemo() {
       emit("sessao", { kind: "segment", segment: seg(t, source, text) });
     });
   });
-  const balloon = (id: number, slot: string, kind: string, question: string, why: string, tMs: number, extra = {}) =>
-    emit("analise", { kind: "suggestion", suggestion: { id, slot, tMs, kind, question, why, earlier: null, now: null, latencyMs: 1600, ...extra } });
-  at(1_600, () => balloon(1, "responda", "responda", "Tô te ouvindo bem, sim. E você, me ouve?", "checagem de áudio", 0));
-  at(3_200, () => {
-    emit("analise", { kind: "suggestionUsed", slot: "responda", id: 1 });
-    balloon(2, "responda", "responda", "Então, teve um caso no Pix em que o evento de confirmação chegava duas vezes e a gente cobrava o cliente de novo. Eu propus guardar a chave de idempotência no Postgres, com restrição de unicidade, e escrevi o teste que reproduzia. Em duas semanas os casos de duplicidade foram a zero.", "história do Pix", 6_000);
-    balloon(3, "historia", "historia", "Se quiser mais um: no checkout da LojaFácil, o fechamento levava 2,1 segundos. Medi com tracing, tirei as chamadas síncronas ao estoque e ficou em 600 milissegundos.", "segundo exemplo", 6_000);
-    balloon(4, "atencao", "requisito", "A vaga pede consistência: feche dizendo como evitou cobrança dupla.", "ligar à vaga", 6_000);
-  });
+  const answer = (turn: number, tMs: number, question: string, text: string) =>
+    emit("analise", { kind: "answer", answer: { turn, tMs, question, text, latencyMs: 1600 } });
+  at(1_600, () => answer(0, 3_000, "Oi Ana, tudo bem? Tá me ouvindo?", "Tô te ouvindo bem, sim. E você, me ouve?"));
+  at(3_000, () => answer(1, 9_000, "Ótimo. Me conta de um problema difícil", "Então, teve um caso no Pix que deu bastante trabalho."));
+  at(3_600, () =>
+    answer(
+      1,
+      9_500,
+      "Ótimo. Me conta de um problema difícil que você resolveu em pagamentos.",
+      "Então, teve um caso no Pix em que o evento de confirmação chegava duas vezes e a gente cobrava o cliente de novo. Eu propus guardar a chave de idempotência no Postgres, com restrição de unicidade, e escrevi o teste que reproduzia. Em duas semanas os casos de duplicidade foram a zero.",
+    ),
+  );
 }
 
 const fullSession: SessionFull = {

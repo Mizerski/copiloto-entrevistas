@@ -44,26 +44,17 @@ export type SessionEvent =
 
 export type Card = { id: number; tMs: number; kind: string; text: string; priority: string };
 
-export type Quote = { text: string; atMs: number | null };
-
-export type BalloonSlot = "responda" | "historia" | "atencao";
-
-export type Suggestion = {
-  id: number;
-  slot: BalloonSlot;
+/** A fala sugerida pra uma pergunta. Uma versão nova do mesmo `turn` substitui a anterior. */
+export type Answer = {
+  turn: number;
   tMs: number;
-  kind: string;
   question: string;
-  why: string;
-  /** Só em contradição. `atMs` nulo: o trecho é do perfil. */
-  earlier: Quote | null;
-  now: Quote | null;
+  text: string;
   latencyMs: number;
 };
 
 export type AnalysisEvent =
-  | { kind: "suggestion"; suggestion: Suggestion }
-  | { kind: "suggestionUsed"; slot: BalloonSlot; id: number }
+  | { kind: "answer"; answer: Answer }
   | { kind: "status"; state: string; message: string | null; latencyMs: number | null };
 
 export type Mark = { id: number; tMs: number; kind: "mark" | "pause" | "resume"; note: string | null };
@@ -138,14 +129,4 @@ export type ProfileInfo = {
   stories: string[];
   terms: string[];
   warnings: string[];
-};
-
-export const CARD_LABEL: Record<string, string> = {
-  responda: "Responda",
-  historia: "Se pedirem mais",
-  atencao: "Atenção",
-  contradicao: "Contradição",
-  duas_partes: "Duas partes",
-  esclarecer: "Esclarecer",
-  requisito: "Requisito da vaga",
 };

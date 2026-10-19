@@ -79,17 +79,9 @@ fn main() {
     let printer = std::thread::spawn(move || {
         while let Ok(event) = rx.recv() {
             match event {
-                AnalysisEvent::Suggestion { suggestion: s } => {
-                    print!(
-                        "    · {} [{}] {} ({} ms)",
-                        s.slot, s.kind, s.question, s.latency_ms
-                    );
-                    if let (Some(a), Some(b)) = (&s.earlier, &s.now) {
-                        print!("\n        antes: \"{}\" | agora: \"{}\"", a.text, b.text);
-                    }
-                    println!();
+                AnalysisEvent::Answer { answer: a } => {
+                    println!("    · resposta {} ({} ms): {}", a.turn + 1, a.latency_ms, a.text)
                 }
-                AnalysisEvent::SuggestionUsed { .. } => println!("    (balões limpos)"),
                 AnalysisEvent::Status {
                     state,
                     message: Some(m),

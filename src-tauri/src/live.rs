@@ -220,12 +220,6 @@ impl LiveSession {
         Ok(())
     }
 
-    pub fn use_suggestion(&self, id: i64) {
-        if let Some(a) = &self.analyzer {
-            a.use_suggestion(id);
-        }
-    }
-
     /// Para a captura, espera as últimas falas da transcrição e fecha a sessão.
     pub async fn stop(self) {
         let duration_ms = self.started_at.elapsed().as_millis() as u64;

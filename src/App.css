@@ -186,35 +186,24 @@ body,
   box-shadow: inset 3px 0 0 var(--gray-7), var(--base-card-surface-box-shadow);
 }
 
-/* Balões de pergunta. Clicar marca como perguntada; a pergunta nova entra com um fade
-   curto, pra notar a troca sem piscar. */
-.balloon {
-  cursor: pointer;
+/* A resposta pronta. Texto novo entra com um fade curto, pra notar a troca sem piscar. */
+.answer-card {
+  box-shadow: inset 3px 0 0 var(--orange-9), var(--base-card-surface-box-shadow);
 }
 
-.balloon:hover {
-  background-color: var(--gray-a2);
+.answer-question {
+  margin: 0;
 }
 
-.balloon:focus-visible {
-  outline: 2px solid var(--focus-8);
-  outline-offset: 1px;
-}
-
-.balloon.empty {
-  cursor: default;
-  background: transparent;
+.answer-count {
+  min-width: 44px;
+  text-align: center;
 }
 
 .balloon-text {
   margin: 0;
   line-height: var(--line-height-3);
   animation: balloon-in 0.35s ease-out;
-}
-
-.contradiction {
-  border-left: 2px solid var(--red-6);
-  padding-left: var(--space-2);
 }
 
 @keyframes balloon-in {

@@ -1,13 +1,12 @@
 //! Análise ao vivo do lado do candidato. Agrupa as falas em turnos (pergunta do
 //! entrevistador + sua resposta) e faz duas chamadas à LLM:
 //!
-//! - Resposta: três balões (responda, historia, atencao) com o que falar, tirado só do
-//!   perfil da pessoa. Começa enquanto o entrevistador ainda pergunta (a cada
-//!   `ANSWER_EVERY_WORDS` palavras novas) e de novo quando ele para de falar.
+//! - Resposta: uma fala pronta por pergunta, tirada só do perfil da pessoa. Começa
+//!   enquanto o entrevistador ainda pergunta (a cada `ANSWER_EVERY_WORDS` palavras novas)
+//!   e é refeita quando ele para de falar. Depois que a pessoa começa a responder, a fala
+//!   daquela pergunta não muda mais.
 //! - Memória: a cada resposta fechada, o resumo da conversa e os fatos que a pessoa
-//!   afirmou, pra o balão "atencao" apontar quando a pergunta supõe algo que não bate.
-//!   Uma contradição só aparece com os dois trechos conferidos na transcrição (ou no
-//!   perfil), pra não acusar por erro do modelo.
+//!   afirmou, pra as próximas respostas não contradizerem as anteriores.
 //!
 //! O microfone é o candidato; a chamada é o entrevistador. Uma resposta fecha quando o
 //! entrevistador volta a falar (mais que um "uhum") ou depois de
@@ -32,8 +31,6 @@ const CONTEXT_TURNS: usize = 3;
 /// Fala do entrevistador com até tantas palavras no meio da resposta é só "uhum",
 /// "entendi": não fecha a resposta.
 const BACKCHANNEL_WORDS: usize = 3;
-/// Os balões: o que responder à pergunta do entrevistador.
-const SLOTS: [&str; 3] = ["responda", "historia", "atencao"];
 /// Palavras novas da pergunta que disparam outra sugestão.
 const ANSWER_EVERY_WORDS: usize = 6;
 /// Silêncio do entrevistador que fecha a pergunta.
@@ -61,16 +58,12 @@ A transcrição é automática e pode ter palavras erradas.";
     rename_all_fields = "camelCase"
 )]
 pub enum AnalysisEvent {
-    /// Fala nova num balão. Substitui a que estava naquela posição.
-    Suggestion {
-        suggestion: Suggestion,
+    /// A fala sugerida pra uma pergunta. Uma versão nova da mesma pergunta (mesmo
+    /// `turn`) substitui a anterior.
+    Answer {
+        answer: Answer,
     },
-    /// Pergunta nova (ou clicou no balão): o balão esvazia.
-    SuggestionUsed {
-        slot: String,
-        id: i64,
-    },
-    /// `analisando`, `ok`, `descartada` ou `erro`.
+    /// `analisando`, `ok` ou `erro`.
     Status {
         state: String,
         message: Option<String>,
@@ -80,26 +73,16 @@ pub enum AnalysisEvent {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Suggestion {
-    pub id: i64,
-    /// Posição na tela: `responda`, `historia` ou `atencao`.
-    pub slot: String,
+pub struct Answer {
+    /// A pergunta, na ordem da entrevista (0 = primeira).
+    pub turn: usize,
+    /// Quando a pergunta terminou (relógio da sessão).
     pub t_ms: u64,
-    pub kind: String,
+    /// O que o entrevistador disse até agora nesta pergunta.
     pub question: String,
-    pub why: String,
-    /// Só em contradição: o que foi dito antes e o que foi dito agora.
-    pub earlier: Option<Quote>,
-    pub now: Option<Quote>,
-    pub latency_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Quote {
+    /// A fala pronta.
     pub text: String,
-    /// Quando foi dito; `None` quando o trecho é do perfil.
-    pub at_ms: Option<u64>,
+    pub latency_ms: u64,
 }
 
 /// Uma afirmação da pessoa, guardada pra comparar com o que perguntarem depois.
@@ -120,8 +103,8 @@ struct Turn {
 struct State {
     turns: Vec<Turn>,
     summary: String,
-    /// Balões na tela, no máximo um por posição.
-    slots: Vec<Suggestion>,
+    /// A última fala sugerida de cada pergunta (pelo índice do turno).
+    answers: HashMap<usize, String>,
     facts: Vec<Fact>,
     suggest: SuggestState,
 }
@@ -140,8 +123,6 @@ pub struct Analyzer {
     db: Arc<Db>,
     llm: Arc<LlmClient>,
     stable_context: String,
-    /// O perfil, pra conferir trechos citados em contradições.
-    profile: String,
     state: Mutex<State>,
     generation: AtomicU64,
     emit: Arc<dyn Fn(AnalysisEvent) + Send + Sync>,
@@ -172,11 +153,10 @@ impl Analyzer {
             db,
             llm: Arc::new(llm),
             stable_context,
-            profile: profile.to_string(),
             state: Mutex::new(State {
                 turns: Vec::new(),
                 summary: String::new(),
-                slots: Vec::new(),
+                answers: HashMap::new(),
                 facts: Vec::new(),
                 suggest: SuggestState::default(),
             }),
@@ -191,7 +171,7 @@ impl Analyzer {
             return;
         }
         let from_interviewer = segment.source == INTERVIEWER;
-        let (close, new_turn) = {
+        let close = {
             let mut st = self.state.lock().unwrap();
             if from_interviewer {
                 let previous_open = st.turns.last().is_some_and(|t| !t.answer.is_empty());
@@ -199,8 +179,7 @@ impl Analyzer {
                     st.turns.last_mut().unwrap().answer.push(segment.clone());
                     return;
                 }
-                let new_turn = previous_open || st.turns.is_empty();
-                if new_turn {
+                if previous_open || st.turns.is_empty() {
                     st.turns.push(Turn {
                         question: vec![segment.clone()],
                         ..Default::default()
@@ -209,21 +188,16 @@ impl Analyzer {
                     st.turns.last_mut().unwrap().question.push(segment.clone());
                 }
                 // O entrevistador voltou a falar: a resposta anterior fechou.
-                let close = previous_open && needs_analysis(&st.turns[st.turns.len() - 2]);
-                (close, new_turn)
+                previous_open && needs_analysis(&st.turns[st.turns.len() - 2])
             } else {
                 if st.turns.is_empty() {
                     st.turns.push(Turn::default());
                 }
                 st.turns.last_mut().unwrap().answer.push(segment.clone());
-                (false, false)
+                false
             }
         };
         if from_interviewer {
-            // Pergunta nova: os balões eram da anterior.
-            if new_turn {
-                self.take_slots(|_| true, false);
-            }
             self.suggest_answer(segment.end_ms, false);
         }
         if close {
@@ -273,30 +247,6 @@ impl Analyzer {
             .is_some_and(needs_analysis);
         if pending {
             self.analyze(now_ms);
-        }
-    }
-
-    /// Clicou no balão: já usou.
-    pub fn use_suggestion(&self, id: i64) {
-        self.take_slots(|s| s.id == id, true);
-    }
-
-    /// Tira da tela os balões usados. `used_mark`: grava no banco como usado.
-    fn take_slots(&self, used: impl Fn(&Suggestion) -> bool, used_mark: bool) {
-        let taken: Vec<Suggestion> = {
-            let mut st = self.state.lock().unwrap();
-            let (taken, kept) = std::mem::take(&mut st.slots).into_iter().partition(&used);
-            st.slots = kept;
-            taken
-        };
-        for s in taken {
-            if used_mark {
-                let _ = self.db.mark_card_used(s.id);
-            }
-            (self.emit)(AnalysisEvent::SuggestionUsed {
-                slot: s.slot,
-                id: s.id,
-            });
         }
     }
 
@@ -353,6 +303,10 @@ impl Analyzer {
             if st.turns[index].question.is_empty() {
                 return;
             }
+            // Você já começou a responder com a fala na tela: ela não muda mais.
+            if !st.turns[index].answer.is_empty() && st.answers.contains_key(&index) {
+                return;
+            }
             let words = word_count(&join(&st.turns[index].question));
             let seen = if st.suggest.turn == index {
                 st.suggest.words_at_request
@@ -401,7 +355,7 @@ impl Analyzer {
                 Ok((value, usage)) => {
                     let _ = this.db.insert_usage(this.session_id, "resposta", &usage);
                     if current {
-                        this.show_suggestions(&value, turn_index, at_ms, usage.latency_ms);
+                        this.show_answer(&value, turn_index, at_ms, usage.latency_ms);
                     }
                 }
                 Err(e) => this.status("erro", Some(e), None),
@@ -429,11 +383,8 @@ impl Analyzer {
                 ));
             }
         }
-        if !st.slots.is_empty() {
-            out.push_str("\nBalões na tela agora:\n");
-            for s in &st.slots {
-                out.push_str(&format!("- {}: {}\n", s.slot, s.question));
-            }
+        if let Some(text) = st.answers.get(&index) {
+            out.push_str(&format!("\nFala na tela agora pra esta pergunta:\n{text}\n"));
         }
         out.push_str("\nConversa recente (a última pergunta pode estar em andamento):\n");
         push_turns(
@@ -443,109 +394,38 @@ impl Analyzer {
         out
     }
 
-    /// Atualiza os balões. Um balão só troca quando a pergunta nova é diferente da que
-    /// está nele; pergunta vazia mantém o que está na tela.
-    fn show_suggestions(&self, value: &Value, turn_index: usize, t_ms: u64, latency_ms: u64) {
-        let mut shown = Vec::new();
-        {
+    /// Mostra a fala da pergunta. Se você já começou a responder, a que está na tela
+    /// fica (trocar o texto no meio da fala atrapalha).
+    fn show_answer(&self, value: &Value, turn_index: usize, t_ms: u64, latency_ms: u64) {
+        let text = value["fala"].as_str().unwrap_or_default().trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let answer = {
             let mut st = self.state.lock().unwrap();
-            for slot in SLOTS {
-                let v = &value[slot];
-                let question = v["fala"]
-                    .as_str()
-                    .or(v["dica"].as_str())
-                    .unwrap_or_default()
-                    .trim();
-                if question.is_empty() {
-                    continue;
-                }
-                let kind = v["tipo"].as_str().unwrap_or(slot);
-                let (earlier, now) = if kind == "contradicao" {
-                    match self.check_contradiction(&st, turn_index, v) {
-                        Some((earlier, now)) => (Some(earlier), Some(now)),
-                        // Trecho que não está na transcrição: o modelo inventou.
-                        None => {
-                            self.status(
-                                "descartada",
-                                Some(format!("contradição sem trecho conferido: {question}")),
-                                None,
-                            );
-                            continue;
-                        }
-                    }
-                } else {
-                    (None, None)
-                };
-                // Mesmo texto que já está na tela: nada muda.
-                if st.slots.iter().any(|s| s.slot == slot && s.question == question) {
-                    continue;
-                }
-                let priority = if kind == "contradicao" {
-                    "alta"
-                } else {
-                    "media"
-                };
-                let id = self
-                    .db
-                    .insert_card(self.session_id, t_ms, kind, question, priority)
-                    .unwrap_or(0);
-                let suggestion = Suggestion {
-                    id,
-                    slot: slot.into(),
-                    t_ms,
-                    kind: kind.into(),
-                    question: question.into(),
-                    why: v["motivo"].as_str().unwrap_or_default().trim().into(),
-                    earlier,
-                    now,
-                    latency_ms,
-                };
-                st.slots.retain(|s| s.slot != slot);
-                st.slots.push(suggestion.clone());
-                shown.push(suggestion);
+            let Some(turn) = st.turns.get(turn_index) else {
+                return;
+            };
+            let started = !turn.answer.is_empty();
+            let question = join(&turn.question);
+            match st.answers.get(&turn_index) {
+                Some(_) if started => return,
+                Some(shown) if *shown == text => return,
+                _ => {}
             }
-        }
-        for suggestion in shown {
-            (self.emit)(AnalysisEvent::Suggestion { suggestion });
-        }
-    }
-
-    /// Confere os dois trechos de uma contradição: o de agora tem que estar na pergunta
-    /// (ou no começo da resposta), e o de antes numa resposta anterior ou no perfil.
-    fn check_contradiction(
-        &self,
-        st: &State,
-        turn_index: usize,
-        v: &Value,
-    ) -> Option<(Quote, Quote)> {
-        let before = v["trecho_antes"].as_str()?.trim();
-        let now = v["trecho_agora"].as_str()?.trim();
-        if before.is_empty() || now.is_empty() {
-            return None;
-        }
-        let turn = st.turns.get(turn_index)?;
-        let current: Vec<&Segment> = turn.question.iter().chain(&turn.answer).collect();
-        let now_at = find_quote(now, &current)?;
-        let earlier: Vec<&Segment> = st.turns[..turn_index]
-            .iter()
-            .flat_map(|t| &t.answer)
-            .filter(|s| s.source != INTERVIEWER)
-            .collect();
-        let before_at = match find_quote(before, &earlier) {
-            Some(at) => Some(at),
-            None if quote_in_text(before, &self.profile) => None,
-            None => return None,
+            st.answers.insert(turn_index, text.clone());
+            Answer {
+                turn: turn_index,
+                t_ms,
+                question,
+                text,
+                latency_ms,
+            }
         };
-        Some((
-            Quote {
-                text: before.into(),
-                at_ms: before_at,
-            },
-            Quote {
-                text: now.into(),
-                at_ms: Some(now_at),
-            },
-        ))
+        let _ = self
+            .db
+            .insert_card(self.session_id, t_ms, "resposta", &answer.text, "media");
+        (self.emit)(AnalysisEvent::Answer { answer });
     }
 
     fn apply(&self, value: &Value, answer: &[Segment], current: bool) {

@@ -31,7 +31,7 @@ import {
 } from "@radix-ui/react-icons";
 import { average, formatClock, formatMs } from "./format";
 import { History } from "./History";
-import { Balloons } from "./Insights";
+import { AnswerFeed } from "./Insights";
 import { Notes } from "./Notes";
 import { Onboarding } from "./Onboarding";
 import { Profiles } from "./Profiles";
@@ -43,8 +43,7 @@ import {
   SOURCE_LABEL,
   type AnalysisEvent,
   type AudioApp,
-  type BalloonSlot,
-  type Suggestion,
+  type Answer,
   type CaptureEvent,
   type KitRow,
   type LlmSettings,
@@ -124,7 +123,7 @@ function App() {
   const [latency, setLatency] = useState<Record<Source, number[]>>({ mic: [], sistema: [] });
   const [echoes, setEchoes] = useState(0);
   const [reconnecting, setReconnecting] = useState<Source | null>(null);
-  const [suggestions, setSuggestions] = useState<Partial<Record<BalloonSlot, Suggestion>>>({});
+  const [answers, setAnswers] = useState<Answer[]>([]);
   const [marks, setMarks] = useState<Mark[]>([]);
   const [paused, setPaused] = useState(false);
   const [onTop, setOnTop] = useState(false);
@@ -207,8 +206,7 @@ function App() {
         }
       }),
       listen<AnalysisEvent>("analise", ({ payload: e }) => {
-        if (e.kind === "suggestion") setSuggestions((m) => ({ ...m, [e.suggestion.slot]: e.suggestion }));
-        else if (e.kind === "suggestionUsed") setSuggestions((m) => dropSuggestion(m, e.id));
+        if (e.kind === "answer") setAnswers((list) => upsertAnswer(list, e.answer));
         else if (e.kind === "status" && e.state === "erro") addLog(`Análise: ${e.message}`);
       }),
       listen<number>("marcacao", ({ payload }) => {
@@ -256,7 +254,7 @@ function App() {
     setLatency({ mic: [], sistema: [] });
     setEchoes(0);
     setReconnecting(null);
-    setSuggestions({});
+    setAnswers([]);
     setMarks([]);
     setPaused(false);
     try {
@@ -517,14 +515,7 @@ function App() {
       )}
 
       {phase === "running" && (
-        <Balloons
-          suggestions={suggestions}
-          waiting={segments.some((s) => s.source === "sistema")}
-          onUse={(s) => {
-            setSuggestions((m) => dropSuggestion(m, s.id));
-            invoke("use_suggestion", { id: s.id }).catch(() => {});
-          }}
-        />
+        <AnswerFeed answers={answers} waiting={segments.some((s) => s.source === "sistema")} />
       )}
 
       <Card size="1" className="transcript-card">
@@ -607,7 +598,9 @@ function App() {
 
 export default App;
 
-/** Tira o balão com esse id (dispensado ou pergunta nova). */
-function dropSuggestion(m: Partial<Record<BalloonSlot, Suggestion>>, id: number) {
-  return Object.fromEntries(Object.entries(m).filter(([, s]) => s.id !== id)) as Partial<Record<BalloonSlot, Suggestion>>;
+/** Troca a resposta da mesma pergunta ou acrescenta, mantendo a ordem das perguntas. */
+function upsertAnswer(list: Answer[], answer: Answer) {
+  const next = list.filter((a) => a.turn !== answer.turn);
+  next.push(answer);
+  return next.sort((a, b) => a.turn - b.turn);
 }
