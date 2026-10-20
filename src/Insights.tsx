@@ -7,6 +7,25 @@ import { ChevronLeftIcon, ChevronRightIcon } from "@radix-ui/react-icons";
 import { formatClock } from "./format";
 import type { Answer } from "./types";
 
+/** Parágrafos separados por linha em branco e **negrito**; um ** sem par (texto ainda chegando) some. */
+function Rich({ text }: { text: string }) {
+  return (
+    <>
+      {text
+        .split(/\n\s*\n/)
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .map((p, i) => (
+          <p key={i}>
+            {p.split(/\*\*(.+?)\*\*/g).map((part, j) =>
+              j % 2 ? <strong key={j}>{part}</strong> : part.replace(/\*\*/g, ""),
+            )}
+          </p>
+        ))}
+    </>
+  );
+}
+
 /** As últimas palavras da pergunta, pra lembrar do que se trata. */
 function tail(text: string, words = 28) {
   const all = text.split(/\s+/).filter(Boolean);
@@ -75,8 +94,8 @@ export function AnswerFeed({ answers, waiting }: Props) {
             <Text as="p" size="1" color="gray" className="answer-question">
               {tail(answer.question)}
             </Text>
-            <Text as="p" size="4" weight="medium" className="balloon-text" key={`${answer.turn}-${answer.text.length}`}>
-              {answer.text}
+            <Text as="div" size="3" className="balloon-text" key={`${answer.turn}-${answer.text.length}`}>
+              <Rich text={answer.text} />
             </Text>
           </>
         ) : (

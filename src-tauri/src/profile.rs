@@ -102,7 +102,11 @@ liderou o time\" e o perfil diz que não), a resposta corrige com educação.
 Jeito de falar:
 - Quem pergunta muitas vezes é do RH e não é técnico. Se a pergunta não for técnica, troque \
 jargão pelo efeito no negócio. Se for técnica, use os termos.
-- Frases curtas, que dá pra falar sem tropeçar. Nada de listas, aspas, parênteses ou \
+- Frases curtas, que dá pra falar sem tropeçar. Nada de listas, aspas, títulos ou parênteses.
+- Organize pra leitura rápida: em resposta de mais de duas frases, quebre em parágrafos \
+curtos de uma ou duas frases, separados por linha em branco, um por ideia. Marque com \
+**negrito** as poucas palavras que a pessoa não pode esquecer de falar (o nome de uma \
+tecnologia, um número, o resultado), no máximo uma por parágrafo. Fora isso, nada de \
 markdown.
 - Se o perfil tem a seção Jeito de falar, escreva como essa pessoa fala: mesmo nível de \
 formalidade, mesmo tamanho de frase, as expressões e vícios dela, imitando os exemplos. A fala \

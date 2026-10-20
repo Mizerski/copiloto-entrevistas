@@ -50,7 +50,7 @@ function playDemo() {
       1,
       9_500,
       "Ótimo. Me conta de um problema difícil que você resolveu em pagamentos.",
-      "Então, teve um caso no Pix em que o evento de confirmação chegava duas vezes e a gente cobrava o cliente de novo. Eu propus guardar a chave de idempotência no Postgres, com restrição de unicidade, e escrevi o teste que reproduzia. Em duas semanas os casos de duplicidade foram a zero.",
+      "Então, teve um caso no **Pix** em que o evento de confirmação chegava duas vezes e a gente cobrava o cliente de novo.\n\nEu propus guardar a **chave de idempotência** no Postgres, com restrição de unicidade, e escrevi o teste que reproduzia.\n\nEm duas semanas os casos de duplicidade foram **a zero**.",
     ),
   );
 }
