@@ -65,6 +65,10 @@ const NONE = "__nenhum__";
 const REPLAY = "__arquivo__";
 /** PID 0: o backend entende como "todo o áudio do PC". */
 const DESKTOP = "0";
+/** Nível mínimo pra considerar que o entrevistador soou alguma vez. */
+const HEARD_RMS = 0.001;
+/** Sem nenhum som do entrevistador depois disso, a tela avisa. */
+const SILENCE_WARNING_MS = 20_000;
 const EMPTY_TEXT: Record<Source, string> = { mic: "", sistema: "" };
 
 /** RMS linear → 0..100, numa escala de -60 dB a 0 dB. */
@@ -134,6 +138,8 @@ function App() {
   const [log, setLog] = useState<string[]>([]);
   const lastLevel = useRef<Record<Source, number>>({ mic: 0, sistema: 0 });
   const startedAtRef = useRef(0);
+  const heardSistema = useRef(false);
+  const hasOtherSide = useRef(false);
 
   const addLog = (line: string) =>
     setLog((l) => [`${new Date().toLocaleTimeString()}  ${line}`, ...l].slice(0, 80));
@@ -173,7 +179,10 @@ function App() {
 
     const subscriptions = [
       listen<CaptureEvent>("captura", ({ payload: e }) => {
-        if (e.kind === "level") lastLevel.current[e.source] = e.rms;
+        if (e.kind === "level") {
+          lastLevel.current[e.source] = e.rms;
+          if (e.source === "sistema" && e.rms > HEARD_RMS) heardSistema.current = true;
+        }
         else if (e.kind === "started") addLog(`${SOURCE_LABEL[e.source]}: capturando (${e.format})`);
         else if (e.kind === "error") addLog(`${SOURCE_LABEL[e.source]}: ${e.message}`);
         else if (e.kind === "stopped") addLog(`${SOURCE_LABEL[e.source]}: ${e.seconds.toFixed(1)} s capturados`);
@@ -277,6 +286,8 @@ function App() {
       setFinished(null);
       const t0 = Date.now();
       startedAtRef.current = t0;
+      heardSistema.current = false;
+      hasOtherSide.current = Boolean(replayFile || appPid);
       setStartedAt(t0);
       setPhase("running");
       setCandidateAware(false);
@@ -486,6 +497,22 @@ function App() {
           )}
         </Flex>
       </Card>
+
+      {phase === "running" &&
+        hasOtherSide.current &&
+        !heardSistema.current &&
+        now - startedAt > SILENCE_WARNING_MS && (
+          <Callout.Root color="amber" size="1">
+            <Callout.Icon>
+              <ExclamationTriangleIcon />
+            </Callout.Icon>
+            <Callout.Text>
+              Não chegou nenhum som do entrevistador. Confira se a chamada está tocando no alto-falante ou fone
+              padrão do Windows e se o volume não está no mudo. Se ele já falou, troque a opção para "Todo o áudio
+              do PC" e inicie de novo.
+            </Callout.Text>
+          </Callout.Root>
+        )}
 
       {phase === "running" && (
         <Flex align="center" gap="2" wrap="wrap">

@@ -314,6 +314,14 @@ fn capture_thread(
     let _ = client.stop_stream();
 }
 
+/// Cliente de loopback do dispositivo de saída padrão: captura o que o Windows toca nele.
+fn default_output_loopback() -> Result<AudioClient, wasapi::WasapiError> {
+    let enumerator = DeviceEnumerator::new()?;
+    enumerator
+        .get_default_device(&Direction::Render)?
+        .get_iaudioclient()
+}
+
 /// Tenta abrir já em mono 16 kHz; se o Windows recusar, cai pra 48 kHz estéreo.
 fn open_client(target: &Input) -> Result<(AudioClient, WaveFormat), String> {
     let wanted = [
@@ -334,12 +342,15 @@ fn open_client(target: &Input) -> Result<(AudioClient, WaveFormat), String> {
             }
             Input::App(pid) => AudioClient::new_application_loopback_client(*pid, true)
                 .map_err(|e| format!("loopback do processo {pid} falhou: {e}"))?,
-            // Loopback por processo em modo "exclusão": captura todos os processos
-            // menos a árvore do nosso, então o app nunca escuta a si mesmo.
-            Input::Desktop => {
-                AudioClient::new_application_loopback_client(std::process::id(), false)
-                    .map_err(|e| format!("loopback do PC falhou: {e}"))?
-            }
+            // Primeiro tenta o loopback por processo em modo "exclusão" (tudo menos a
+            // nossa árvore, então o app nunca escuta a si mesmo). Se o Windows ou o
+            // driver recusar, cai pro loopback clássico do dispositivo de saída padrão.
+            Input::Desktop => AudioClient::new_application_loopback_client(
+                std::process::id(),
+                false,
+            )
+            .or_else(|_| default_output_loopback())
+            .map_err(|e| format!("loopback do PC falhou: {e}"))?,
             Input::File(_) => return Err("arquivo não é dispositivo".into()),
         };
         let mode = StreamMode::EventsShared {
@@ -349,6 +360,17 @@ fn open_client(target: &Input) -> Result<(AudioClient, WaveFormat), String> {
         match client.initialize_client(&format, &Direction::Capture, &mode) {
             Ok(()) => return Ok((client, format)),
             Err(e) => last_error = e.to_string(),
+        }
+        if matches!(target, Input::Desktop) {
+            // O cliente por processo pode abrir e só falhar ao inicializar.
+            if let Ok(mut device) = default_output_loopback() {
+                if device
+                    .initialize_client(&format, &Direction::Capture, &mode)
+                    .is_ok()
+                {
+                    return Ok((device, format));
+                }
+            }
         }
     }
     Err(format!("nenhum formato aceito: {last_error}"))
