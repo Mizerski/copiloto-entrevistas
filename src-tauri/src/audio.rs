@@ -104,6 +104,9 @@ pub enum Input {
     Microphone(Option<String>),
     /// Loopback por processo: o áudio que esse app (e os filhos dele) toca.
     App(u32),
+    /// Tudo que toca no PC, menos o próprio copiloto. Pra apps que o loopback por
+    /// processo não pega (áudio tocado por outro processo, drivers virtuais etc.).
+    Desktop,
     /// Modo replay: um WAV tocado em tempo real, como se fosse a chamada.
     File(PathBuf),
 }
@@ -331,6 +334,12 @@ fn open_client(target: &Input) -> Result<(AudioClient, WaveFormat), String> {
             }
             Input::App(pid) => AudioClient::new_application_loopback_client(*pid, true)
                 .map_err(|e| format!("loopback do processo {pid} falhou: {e}"))?,
+            // Loopback por processo em modo "exclusão": captura todos os processos
+            // menos a árvore do nosso, então o app nunca escuta a si mesmo.
+            Input::Desktop => {
+                AudioClient::new_application_loopback_client(std::process::id(), false)
+                    .map_err(|e| format!("loopback do PC falhou: {e}"))?
+            }
             Input::File(_) => return Err("arquivo não é dispositivo".into()),
         };
         let mode = StreamMode::EventsShared {

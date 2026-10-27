@@ -63,6 +63,8 @@ type Phase = "setup" | "running" | "stopping" | "done";
 const LATENCY_WINDOW = 20;
 const NONE = "__nenhum__";
 const REPLAY = "__arquivo__";
+/** PID 0: o backend entende como "todo o áudio do PC". */
+const DESKTOP = "0";
 const EMPTY_TEXT: Record<Source, string> = { mic: "", sistema: "" };
 
 /** RMS linear → 0..100, numa escala de -60 dB a 0 dB. */
@@ -245,6 +247,7 @@ function App() {
 
   function otherSideLabel() {
     if (replayFile) return `replay: ${fileName(replayFile)}`;
+    if (appPid === DESKTOP) return "áudio do PC";
     return apps.find((a) => String(a.pid) === appPid)?.name ?? null;
   }
 
@@ -338,6 +341,7 @@ function App() {
   const providerName = (p: string) => (p === "anthropic" ? "Anthropic" : "o provedor compatível com OpenAI");
   const otherSideOptions = [
     { value: NONE, label: "Nenhum (só microfone)" },
+    { value: DESKTOP, label: "Todo o áudio do PC", detail: "pra apps que não aparecem ou não pegam" },
     ...apps.map((a) => ({ value: String(a.pid), label: a.name, detail: a.active ? "tocando agora" : undefined })),
     { value: REPLAY, label: replayFile ? `Replay: ${fileName(replayFile)}` : "Arquivo WAV (replay)…" },
   ];

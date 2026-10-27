@@ -115,6 +115,8 @@ async fn start_session(
     };
     let sistema = match (request.replay_file, request.app_pid) {
         (Some(path), _) => Some(Input::File(path.into())),
+        // 0 é o "todo o áudio do PC" da tela; nenhum app real tem PID 0.
+        (None, Some(0)) => Some(Input::Desktop),
         (None, Some(pid)) => Some(Input::App(pid)),
         (None, None) => None,
     };
