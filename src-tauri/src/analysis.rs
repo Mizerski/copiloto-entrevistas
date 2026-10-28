@@ -1,21 +1,24 @@
 //! Análise ao vivo do lado do candidato. Agrupa as falas em turnos (pergunta do
 //! entrevistador + sua resposta) e faz duas chamadas à LLM:
 //!
-//! - Resposta: uma fala pronta por pergunta, tirada só do perfil da pessoa. Começa
-//!   enquanto o entrevistador ainda pergunta (a cada `ANSWER_EVERY_WORDS` palavras novas)
-//!   e é refeita quando ele para de falar. Depois que a pessoa começa a responder, a fala
-//!   daquela pergunta não muda mais.
+//! - Resposta: uma fala pronta por pergunta, tirada só do perfil da pessoa, em streaming
+//!   (a primeira frase aparece antes do resto chegar). Começa enquanto o entrevistador
+//!   ainda pergunta (a cada `ANSWER_EVERY_WORDS` palavras novas, contando o parcial da
+//!   transcrição) e é refeita na hora em que ele para de falar, cancelando a versão que
+//!   estava no ar. Depois que a pessoa começa a responder, a fala daquela pergunta não
+//!   muda mais.
 //! - Memória: a cada resposta fechada, o resumo da conversa e os fatos que a pessoa
 //!   afirmou, pra as próximas respostas não contradizerem as anteriores.
 //!
 //! O microfone é o candidato; a chamada é o entrevistador. Uma resposta fecha quando o
 //! entrevistador volta a falar (mais que um "uhum") ou depois de
-//! `CLOSE_AFTER_SILENCE_MS` de silêncio. Resultado que chega depois de um mais novo é
-//! descartado.
+//! `CLOSE_AFTER_SILENCE_MS` de silêncio. Um "uhum" do candidato no meio da pergunta
+//! também não conta como resposta.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -23,18 +26,27 @@ use serde_json::{Value, json};
 use crate::audio::Source;
 use crate::db::{Db, Segment};
 use crate::kit::fold;
-use crate::llm::{LlmClient, Prompt};
+use crate::llm::{LlmClient, Prompt, TextPrompt};
+use crate::session::Heard;
 
 const CLOSE_AFTER_SILENCE_MS: u64 = 3_000;
 /// Turnos anteriores mandados junto com o atual, pra dar contexto.
 const CONTEXT_TURNS: usize = 3;
-/// Fala do entrevistador com até tantas palavras no meio da resposta é só "uhum",
-/// "entendi": não fecha a resposta.
+/// Fala com até tantas palavras no meio da fala do outro é só "uhum", "entendi", "sim":
+/// não fecha a resposta (do entrevistador) nem começa uma (do candidato).
 const BACKCHANNEL_WORDS: usize = 3;
 /// Palavras novas da pergunta que disparam outra sugestão.
 const ANSWER_EVERY_WORDS: usize = 6;
-/// Silêncio do entrevistador que fecha a pergunta.
+/// Silêncio do entrevistador que fecha a pergunta quando a transcrição não avisa antes.
 const QUESTION_DONE_MS: u64 = 1_200;
+/// Um "sim" curto do candidato vira resposta se o entrevistador não voltar a falar nesse tempo.
+const SHORT_ANSWER_MS: u64 = 1_500;
+/// Uma versão nova da resposta só substitui a da tela quando já tem esse começo.
+const REWRITE_MIN_CHARS: usize = 60;
+/// Intervalo mínimo entre dois pedaços da resposta mandados pra tela.
+const STREAM_EVERY: Duration = Duration::from_millis(60);
+/// O que o modelo devolve quando a fala na tela ainda serve.
+const KEEP: &str = "MESMA";
 /// Fatos guardados na memória da entrevista (os mais recentes).
 const MAX_FACTS: usize = 60;
 
@@ -58,11 +70,12 @@ A transcrição é automática e pode ter palavras erradas.";
     rename_all_fields = "camelCase"
 )]
 pub enum AnalysisEvent {
-    /// A fala sugerida pra uma pergunta. Uma versão nova da mesma pergunta (mesmo
-    /// `turn`) substitui a anterior.
-    Answer {
-        answer: Answer,
-    },
+    /// O entrevistador está fazendo uma pergunta nova (ou ela cresceu). Chega antes da
+    /// resposta, pra tela não deixar a resposta da pergunta anterior à vista.
+    Question { turn: usize, question: String },
+    /// A fala sugerida pra uma pergunta, inteira ou ainda chegando (`done`). Uma versão
+    /// nova da mesma pergunta (mesmo `turn`) substitui a anterior.
+    Answer { answer: Answer },
     /// `analisando`, `ok` ou `erro`.
     Status {
         state: String,
@@ -80,9 +93,11 @@ pub struct Answer {
     pub t_ms: u64,
     /// O que o entrevistador disse até agora nesta pergunta.
     pub question: String,
-    /// A fala pronta.
+    /// A fala pronta (ou o começo dela, se `done` for falso).
     pub text: String,
+    /// Do pedido até o primeiro pedaço do texto.
     pub latency_ms: u64,
+    pub done: bool,
 }
 
 /// Uma afirmação da pessoa, guardada pra comparar com o que perguntarem depois.
@@ -94,24 +109,62 @@ struct Fact {
 
 #[derive(Default, Clone)]
 struct Turn {
+    /// Quando o entrevistador começou a perguntar (0 se o candidato falou primeiro).
+    start_ms: u64,
+    /// O turno começou por uma pergunta do entrevistador.
+    asked: bool,
     question: Vec<Segment>,
     answer: Vec<Segment>,
+    /// Falas curtas do candidato no meio da pergunta ("uhum", "sim"): só viram resposta
+    /// se o entrevistador não continuar.
+    held: Vec<Segment>,
     /// Quantas falas da resposta já foram analisadas.
     analyzed: usize,
 }
 
+impl Turn {
+    fn asked_at(start_ms: u64) -> Self {
+        Turn {
+            start_ms,
+            asked: true,
+            ..Default::default()
+        }
+    }
+
+    /// O entrevistador perguntou e o candidato ainda não começou a responder.
+    fn asking(&self) -> bool {
+        self.asked && self.answer.is_empty()
+    }
+}
+
 struct State {
     turns: Vec<Turn>,
+    /// O que o entrevistador está falando agora e ainda não virou fala final.
+    partial: String,
     summary: String,
-    /// A última fala sugerida de cada pergunta (pelo índice do turno).
-    answers: HashMap<usize, String>,
+    /// A última fala mostrada de cada pergunta (pelo índice do turno).
+    answers: HashMap<usize, Shown>,
+    /// A última pergunta mandada pra tela, pra não repetir.
+    shown_question: (usize, String),
     facts: Vec<Fact>,
     suggest: SuggestState,
 }
 
+#[derive(Clone)]
+struct Shown {
+    text: String,
+    /// Chegou inteira (e não só o começo de um pedido cancelado).
+    done: bool,
+}
+
 #[derive(Default)]
 struct SuggestState {
-    in_flight: bool,
+    /// O pedido no ar, pra cancelar quando chega uma versão melhor da pergunta.
+    in_flight: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// Identifica o pedido mais novo; resultado de outro é descartado.
+    generation: u64,
+    /// O pedido mais novo já mostrou texto na tela.
+    emitted: bool,
     /// Palavras da pergunta atual quando a última sugestão foi pedida.
     words_at_request: usize,
     /// Turno da última sugestão pedida.
@@ -155,14 +208,33 @@ impl Analyzer {
             stable_context,
             state: Mutex::new(State {
                 turns: Vec::new(),
+                partial: String::new(),
                 summary: String::new(),
                 answers: HashMap::new(),
+                shown_question: (usize::MAX, String::new()),
                 facts: Vec::new(),
                 suggest: SuggestState::default(),
             }),
             generation: AtomicU64::new(0),
             emit,
         })
+    }
+
+    /// Um pedido mínimo com o mesmo começo de prompt das respostas: abre a conexão e
+    /// grava o perfil no cache do provedor antes da primeira pergunta.
+    pub fn warm_up(self: &Arc<Self>) {
+        let this = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let prompt = TextPrompt {
+                system: crate::profile::ANSWER_SYSTEM,
+                stable_context: &this.stable_context,
+                user: "A entrevista vai começar. Responda só: ok.",
+                max_tokens: 5,
+            };
+            if let Ok((_, usage)) = this.llm.stream_text(&prompt, |_| {}).await {
+                let _ = this.db.insert_usage(this.session_id, "aquecimento", &usage);
+            }
+        });
     }
 
     /// Uma fala confirmada (já sem eco).
@@ -174,30 +246,28 @@ impl Analyzer {
         let close = {
             let mut st = self.state.lock().unwrap();
             if from_interviewer {
+                st.partial.clear();
                 let previous_open = st.turns.last().is_some_and(|t| !t.answer.is_empty());
                 if previous_open && word_count(&segment.text) <= BACKCHANNEL_WORDS {
                     st.turns.last_mut().unwrap().answer.push(segment.clone());
                     return;
                 }
                 if previous_open || st.turns.is_empty() {
-                    st.turns.push(Turn {
-                        question: vec![segment.clone()],
-                        ..Default::default()
-                    });
-                } else {
-                    st.turns.last_mut().unwrap().question.push(segment.clone());
+                    st.turns.push(Turn::asked_at(segment.start_ms));
                 }
+                let turn = st.turns.last_mut().unwrap();
+                // O entrevistador continuou depois do "uhum": não era resposta.
+                turn.held.retain(|h| h.end_ms > segment.end_ms);
+                turn.question.push(segment.clone());
                 // O entrevistador voltou a falar: a resposta anterior fechou.
                 previous_open && needs_analysis(&st.turns[st.turns.len() - 2])
             } else {
-                if st.turns.is_empty() {
-                    st.turns.push(Turn::default());
-                }
-                st.turns.last_mut().unwrap().answer.push(segment.clone());
+                add_answer(&mut st, segment.clone());
                 false
             }
         };
         if from_interviewer {
+            self.show_question();
             self.suggest_answer(segment.end_ms, false);
         }
         if close {
@@ -205,32 +275,58 @@ impl Analyzer {
         }
     }
 
-    /// `heard_until_ms`: até quando o candidato foi ouvido, contando os parciais. As
-    /// falas finais chegam a cada poucos segundos e com atraso; olhar só pra elas
-    /// confunde pausa de transcrição com fim de resposta.
-    /// `interviewer_heard_ms`: o mesmo pra quem pergunta (fecha a pergunta).
-    pub fn tick(self: &Arc<Self>, now_ms: u64, heard_until_ms: u64, interviewer_heard_ms: u64) {
-        let question_done = {
-            let st = self.state.lock().unwrap();
-            st.turns.last().is_some_and(|t| {
+    /// `heard`: até quando cada lado foi ouvido, contando os parciais (as falas finais
+    /// chegam a cada poucos segundos e com atraso; olhar só pra elas confunde pausa de
+    /// transcrição com fim de fala), o parcial do entrevistador e se ele já parou.
+    pub fn tick(self: &Arc<Self>, now_ms: u64, heard: &Heard) {
+        let (close_previous, question_done, silent_answer) = {
+            let mut st = self.state.lock().unwrap();
+            st.partial = heard.interviewer_partial.trim().to_string();
+
+            // Pergunta nova pelo parcial: a tela troca antes da primeira fala final.
+            let previous_open = st.turns.last().is_none_or(|t| !t.answer.is_empty());
+            let opened = previous_open && word_count(&st.partial) > BACKCHANNEL_WORDS;
+            let close_previous = opened && st.turns.last().is_some_and(needs_analysis);
+            if opened {
+                st.turns
+                    .push(Turn::asked_at(heard.interviewer_partial_start));
+            }
+
+            if let Some(turn) = st.turns.last_mut().filter(|t| t.asking()) {
+                // O entrevistador voltou a falar depois do "uhum": era só reação.
+                turn.held
+                    .retain(|h| heard.interviewer_until <= h.end_ms + 300);
+                let ready = turn
+                    .held
+                    .first()
+                    .is_some_and(|h| now_ms >= h.end_ms + SHORT_ANSWER_MS);
+                if ready {
+                    let held = std::mem::take(&mut turn.held);
+                    turn.answer.extend(held);
+                }
+            }
+
+            let question_done = st.turns.last().is_some_and(|t| {
                 let last = t
                     .question
                     .last()
                     .map_or(0, |s| s.end_ms)
-                    .max(interviewer_heard_ms);
-                !t.question.is_empty() && t.answer.is_empty() && now_ms >= last + QUESTION_DONE_MS
-            })
-        };
-        if question_done {
-            self.suggest_answer(now_ms, true);
-        }
-        let silent_answer = {
-            let st = self.state.lock().unwrap();
-            st.turns.last().is_some_and(|t| {
-                let last_heard = t.answer.last().map_or(0, |s| s.end_ms).max(heard_until_ms);
+                    .max(heard.interviewer_until);
+                let stopped = (heard.interviewer_ended && st.partial.is_empty())
+                    || now_ms >= last + QUESTION_DONE_MS;
+                t.asking() && (!t.question.is_empty() || !st.partial.is_empty()) && stopped
+            });
+            let silent_answer = st.turns.last().is_some_and(|t| {
+                let last_heard = t.answer.last().map_or(0, |s| s.end_ms).max(heard.mic_until);
                 needs_analysis(t) && now_ms >= last_heard + CLOSE_AFTER_SILENCE_MS
-            })
+            });
+            (close_previous, question_done, silent_answer)
         };
+        if close_previous {
+            self.analyze(now_ms);
+        }
+        self.show_question();
+        self.suggest_answer(now_ms, question_done);
         if silent_answer {
             self.analyze(now_ms);
         }
@@ -248,6 +344,29 @@ impl Analyzer {
         if pending {
             self.analyze(now_ms);
         }
+    }
+
+    /// Avisa a tela da pergunta em andamento, quando ela mudou.
+    fn show_question(&self) {
+        let event = {
+            let mut st = self.state.lock().unwrap();
+            let Some(index) = st.turns.len().checked_sub(1) else {
+                return;
+            };
+            if !st.turns[index].asking() {
+                return;
+            }
+            let question = question_text(&st, index);
+            if question.is_empty() || st.shown_question == (index, question.clone()) {
+                return;
+            }
+            st.shown_question = (index, question.clone());
+            AnalysisEvent::Question {
+                turn: index,
+                question,
+            }
+        };
+        (self.emit)(event);
     }
 
     fn analyze(self: &Arc<Self>, now_ms: u64) {
@@ -290,81 +409,107 @@ impl Analyzer {
         });
     }
 
-    /// O que responder à pergunta do entrevistador. Começa enquanto ele
-    /// ainda pergunta (a cada `ANSWER_EVERY_WORDS` palavras novas) e de novo quando ele
-    /// para de falar, pra estar na tela quando for a sua vez.
+    /// O que responder à pergunta do entrevistador. Começa enquanto ele ainda pergunta
+    /// (a cada `ANSWER_EVERY_WORDS` palavras novas) e de novo quando ele para de falar
+    /// (`closing`), cancelando o pedido que ainda estiver no ar: a versão com a pergunta
+    /// inteira é a que importa e não pode esperar a anterior terminar.
     fn suggest_answer(self: &Arc<Self>, now_ms: u64, closing: bool) {
-        let llm = self.llm.clone();
-        let (user, turn_index) = {
-            let mut st = self.state.lock().unwrap();
-            let Some(index) = st.turns.len().checked_sub(1) else {
-                return;
-            };
-            if st.turns[index].question.is_empty() {
-                return;
-            }
-            // Você já começou a responder com a fala na tela: ela não muda mais.
-            if !st.turns[index].answer.is_empty() && st.answers.contains_key(&index) {
-                return;
-            }
-            let words = word_count(&join(&st.turns[index].question));
-            let seen = if st.suggest.turn == index {
-                st.suggest.words_at_request
-            } else {
-                0
-            };
-            let enough = if closing {
-                words > seen
-            } else {
-                words >= seen + ANSWER_EVERY_WORDS || (seen == 0 && words >= 3)
-            };
-            if st.suggest.in_flight || !enough {
-                return;
-            }
-            st.suggest = SuggestState {
-                in_flight: true,
-                words_at_request: words,
-                turn: index,
-            };
-            (self.answer_prompt(&st, index, now_ms), index)
+        let mut st = self.state.lock().unwrap();
+        let Some(index) = st.turns.len().checked_sub(1) else {
+            return;
         };
-
+        if !st.turns[index].asked {
+            return;
+        }
+        let question = question_text(&st, index);
+        if question.is_empty() {
+            return;
+        }
+        // Você já começou a responder com a fala na tela: ela não muda mais.
+        if !st.turns[index].answer.is_empty() && st.answers.contains_key(&index) {
+            return;
+        }
+        let words = word_count(&question);
+        let seen = if st.suggest.turn == index {
+            st.suggest.words_at_request
+        } else {
+            0
+        };
+        let enough = if closing {
+            words > seen
+        } else {
+            words >= seen + ANSWER_EVERY_WORDS || (seen == 0 && words >= 3)
+        };
+        if !enough {
+            return;
+        }
+        if let Some(task) = &st.suggest.in_flight {
+            // No meio da pergunta, a versão no ar segue; quando ela terminar, pede de novo.
+            if !closing && st.suggest.turn == index {
+                return;
+            }
+            task.abort();
+        }
+        let generation = st.suggest.generation + 1;
+        let user = self.answer_prompt(&st, index, now_ms);
         let this = self.clone();
-        tauri::async_runtime::spawn(async move {
-            let schema = crate::profile::answer_schema();
-            let prompt = Prompt {
-                system: crate::profile::ANSWER_SYSTEM,
-                stable_context: &this.stable_context,
-                user: &user,
-                schema: &schema,
-                max_tokens: 2500,
-            };
-            let result = llm.complete_json(&prompt).await;
-            let (current, at_ms) = {
-                let mut st = this.state.lock().unwrap();
-                st.suggest.in_flight = false;
-                let at = st
-                    .turns
-                    .get(turn_index)
-                    .and_then(|t| t.question.last())
-                    .map_or(now_ms, |s| s.end_ms);
-                // O entrevistador já passou pra outra pergunta: esta perdeu a hora.
-                (st.turns.len() == turn_index + 1, at)
-            };
-            match result {
-                Ok((value, usage)) => {
-                    let _ = this.db.insert_usage(this.session_id, "resposta", &usage);
-                    if current {
-                        this.show_answer(&value, turn_index, at_ms, usage.latency_ms);
-                    }
-                }
-                Err(e) => this.status("erro", Some(e), None),
-            }
-            if current {
-                // A pergunta continuou enquanto esta estava no ar.
-                this.suggest_answer(at_ms, false);
-            }
+        let task = tauri::async_runtime::spawn(async move {
+            this.stream_answer(user, index, generation, now_ms).await;
         });
+        st.suggest = SuggestState {
+            in_flight: Some(task),
+            generation,
+            emitted: false,
+            words_at_request: words,
+            turn: index,
+        };
+    }
+
+    async fn stream_answer(
+        self: Arc<Self>,
+        user: String,
+        turn: usize,
+        generation: u64,
+        now_ms: u64,
+    ) {
+        let prompt = TextPrompt {
+            system: crate::profile::ANSWER_SYSTEM,
+            stable_context: &self.stable_context,
+            user: &user,
+            max_tokens: 1200,
+        };
+        let started = Instant::now();
+        let mut first_text_ms = None;
+        let mut last_sent: Option<Instant> = None;
+        let result = self
+            .llm
+            .stream_text(&prompt, |text| {
+                let latency = *first_text_ms.get_or_insert(started.elapsed().as_millis() as u64);
+                if last_sent.is_none_or(|t| t.elapsed() >= STREAM_EVERY) {
+                    last_sent = Some(Instant::now());
+                    self.show_answer(turn, generation, text, false, latency);
+                }
+            })
+            .await;
+        let latency = first_text_ms.unwrap_or(started.elapsed().as_millis() as u64);
+        match result {
+            Ok((text, usage)) => {
+                let _ = self.db.insert_usage(self.session_id, "resposta", &usage);
+                self.show_answer(turn, generation, &text, true, latency);
+            }
+            Err(e) => self.status("erro", Some(e), None),
+        }
+        let at_ms = {
+            let mut st = self.state.lock().unwrap();
+            if st.suggest.generation != generation || st.turns.len() != turn + 1 {
+                // Outro pedido já passou na frente, ou o entrevistador mudou de pergunta.
+                return;
+            }
+            st.suggest.in_flight = None;
+            st.turns[turn].question.last().map_or(now_ms, |s| s.end_ms)
+        };
+        // A pergunta continuou enquanto esta estava no ar.
+        self.suggest_answer(at_ms, false);
     }
 
     fn answer_prompt(&self, st: &State, index: usize, now_ms: u64) -> String {
@@ -383,48 +528,98 @@ impl Analyzer {
                 ));
             }
         }
-        if let Some(text) = st.answers.get(&index) {
-            out.push_str(&format!("\nFala na tela agora pra esta pergunta:\n{text}\n"));
+        // Só a fala inteira pode ser mantida; a que ficou pela metade é refeita.
+        if let Some(shown) = st.answers.get(&index).filter(|s| s.done) {
+            out.push_str(&format!(
+                "\nFala na tela agora pra esta pergunta (se ainda serve, responda só {KEEP}):\n{}\n",
+                shown.text
+            ));
         }
         out.push_str("\nConversa recente (a última pergunta pode estar em andamento):\n");
         push_turns(
             &mut out,
             &st.turns[index.saturating_sub(CONTEXT_TURNS)..=index],
         );
+        if st.turns[index].asking() && !st.partial.is_empty() {
+            out.push_str(&format!(
+                "[agora] Entrevistador (ainda falando): {}\n",
+                st.partial
+            ));
+        }
         out
     }
 
-    /// Mostra a fala da pergunta. Se você já começou a responder, a que está na tela
-    /// fica (trocar o texto no meio da fala atrapalha).
-    fn show_answer(&self, value: &Value, turn_index: usize, t_ms: u64, latency_ms: u64) {
-        let text = value["fala"].as_str().unwrap_or_default().trim().to_string();
+    /// Mostra a fala da pergunta, ainda chegando ou pronta. Se você já começou a
+    /// responder, a que está na tela fica (trocar o texto no meio da fala atrapalha); a
+    /// que já estava entrando continua até o fim.
+    fn show_answer(
+        &self,
+        turn_index: usize,
+        generation: u64,
+        text: &str,
+        done: bool,
+        latency_ms: u64,
+    ) {
+        let text = text.trim();
         if text.is_empty() {
             return;
         }
+        // "MESMA" (ou o começo dela, ainda chegando): a fala na tela fica.
+        let keep = text
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_uppercase();
+        let keep = !keep.is_empty() && KEEP.starts_with(&keep);
         let answer = {
             let mut st = self.state.lock().unwrap();
-            let Some(turn) = st.turns.get(turn_index) else {
+            if st.suggest.generation != generation || st.turns.len() != turn_index + 1 {
                 return;
-            };
-            let started = !turn.answer.is_empty();
-            let question = join(&turn.question);
-            match st.answers.get(&turn_index) {
-                Some(_) if started => return,
-                Some(shown) if *shown == text => return,
-                _ => {}
             }
-            st.answers.insert(turn_index, text.clone());
+            let turn = &st.turns[turn_index];
+            let started = !turn.answer.is_empty();
+            let t_ms = turn.question.last().map_or(turn.start_ms, |s| s.end_ms);
+            let question = question_text(&st, turn_index);
+            let emitted = st.suggest.emitted;
+            let shown = st.answers.get(&turn_index).cloned();
+            let text = match (&shown, keep) {
+                // A da tela ficou pela metade (o pedido dela foi cancelado): ela vira a final.
+                (Some(s), true) if done && !s.done => s.text.clone(),
+                (_, true) => return,
+                (Some(_), false) if started && !emitted => return,
+                // Uma reescrita só toma o lugar quando já tem um começo pra ler.
+                (Some(_), false)
+                    if !emitted && !done && text.chars().count() < REWRITE_MIN_CHARS =>
+                {
+                    return;
+                }
+                (Some(s), false) if s.text == text && s.done == done => return,
+                _ => text.to_string(),
+            };
+            st.suggest.emitted = true;
+            st.answers.insert(
+                turn_index,
+                Shown {
+                    text: text.clone(),
+                    done,
+                },
+            );
             Answer {
                 turn: turn_index,
                 t_ms,
                 question,
                 text,
                 latency_ms,
+                done,
             }
         };
-        let _ = self
-            .db
-            .insert_card(self.session_id, t_ms, "resposta", &answer.text, "media");
+        if done {
+            let _ = self.db.insert_card(
+                self.session_id,
+                answer.t_ms,
+                "resposta",
+                &answer.text,
+                "media",
+            );
+        }
         (self.emit)(AnalysisEvent::Answer { answer });
     }
 
@@ -471,7 +666,10 @@ impl Analyzer {
             out.push_str(&format!("\nResumo da conversa até aqui:\n{}\n", st.summary));
         }
         out.push_str("\nTrocas recentes (olhe a última resposta):\n");
-        push_turns(&mut out, &st.turns[index.saturating_sub(CONTEXT_TURNS)..=index]);
+        push_turns(
+            &mut out,
+            &st.turns[index.saturating_sub(CONTEXT_TURNS)..=index],
+        );
         out
     }
 }
@@ -548,6 +746,41 @@ fn push_turns(out: &mut String, turns: &[Turn]) {
         };
         out.push_str(&format!("[{}] {who}: {}\n", clock(s.start_ms), s.text));
     }
+}
+
+/// Uma fala final do candidato.
+fn add_answer(st: &mut State, segment: Segment) {
+    if st.turns.is_empty() {
+        st.turns.push(Turn::default());
+    }
+    let n = st.turns.len();
+    // Começou antes da pergunta atual: é o fim da resposta anterior, que a transcrição
+    // do microfone entregou atrasada.
+    if n >= 2 && st.turns[n - 1].asking() && segment.start_ms < st.turns[n - 1].start_ms {
+        st.turns[n - 2].answer.push(segment);
+        return;
+    }
+    let turn = &mut st.turns[n - 1];
+    if turn.asking() && word_count(&segment.text) <= BACKCHANNEL_WORDS {
+        turn.held.push(segment);
+        return;
+    }
+    let held = std::mem::take(&mut turn.held);
+    turn.answer.extend(held);
+    turn.answer.push(segment);
+}
+
+/// A pergunta do turno, com o parcial que ainda está chegando se for a atual.
+fn question_text(st: &State, index: usize) -> String {
+    let turn = &st.turns[index];
+    let mut text = join(&turn.question);
+    if index + 1 == st.turns.len() && turn.asking() && !st.partial.is_empty() {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(&st.partial);
+    }
+    text
 }
 
 fn word_count(text: &str) -> usize {

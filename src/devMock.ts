@@ -41,17 +41,29 @@ function playDemo() {
       emit("sessao", { kind: "segment", segment: seg(t, source, text) });
     });
   });
-  const answer = (turn: number, tMs: number, question: string, text: string) =>
-    emit("analise", { kind: "answer", answer: { turn, tMs, question, text, latencyMs: 1600 } });
-  at(1_600, () => answer(0, 3_000, "Oi Ana, tudo bem? Tá me ouvindo?", "Tô te ouvindo bem, sim. E você, me ouve?"));
-  at(3_000, () => answer(1, 9_000, "Ótimo. Me conta de um problema difícil", "Então, teve um caso no Pix que deu bastante trabalho."));
-  at(3_600, () =>
-    answer(
-      1,
-      9_500,
-      "Ótimo. Me conta de um problema difícil que você resolveu em pagamentos.",
-      "Então, teve um caso no **Pix** em que o evento de confirmação chegava duas vezes e a gente cobrava o cliente de novo.\n\nEu propus guardar a **chave de idempotência** no Postgres, com restrição de unicidade, e escrevi o teste que reproduzia.\n\nEm duas semanas os casos de duplicidade foram **a zero**.",
-    ),
+  const question = (turn: number, text: string) => emit("analise", { kind: "question", turn, question: text });
+  // A resposta chega aos pedaços, como no streaming de verdade.
+  const answer = (startAt: number, turn: number, tMs: number, q: string, text: string) => {
+    const words = text.split(" ");
+    words.forEach((_, i) =>
+      at(startAt + i * 45, () =>
+        emit("analise", {
+          kind: "answer",
+          answer: { turn, tMs, question: q, text: words.slice(0, i + 1).join(" "), latencyMs: 450, done: i === words.length - 1 },
+        }),
+      ),
+    );
+  };
+  at(500, () => question(0, "Oi Ana, tudo bem? Tá me ouvindo?"));
+  answer(1_300, 0, 3_000, "Oi Ana, tudo bem? Tá me ouvindo?", "Tô te ouvindo bem, sim. E você, me ouve?");
+  at(1_900, () => question(1, "Ótimo. Me conta de um problema difícil"));
+  at(2_900, () => question(1, "Ótimo. Me conta de um problema difícil que você resolveu em pagamentos."));
+  answer(
+    3_300,
+    1,
+    9_500,
+    "Ótimo. Me conta de um problema difícil que você resolveu em pagamentos.",
+    "Teve um caso no **Pix** que me marcou.\n\nO evento de confirmação chegava duas vezes e a gente cobrava o cliente de novo.\n\nEu propus guardar a **chave de idempotência** no Postgres e escrevi o teste que reproduzia.\n\nEm umas duas semanas a duplicidade foi **a zero**.",
   );
 }
 

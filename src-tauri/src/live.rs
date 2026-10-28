@@ -82,6 +82,9 @@ impl LiveSession {
                 listeners.on_analysis.clone(),
             );
             let _ = analyzer_slot.set(a.clone());
+            // A primeira chamada paga a conexão e grava o perfil no cache: melhor agora
+            // do que na primeira pergunta.
+            a.warm_up();
             a
         });
 
@@ -99,18 +102,20 @@ impl LiveSession {
                             source,
                             text,
                             is_final,
+                            speech_final,
                             start_ms,
                             end_ms,
                             latency_ms,
-                            ..
                         } => session.on_transcript(
                             *source,
                             text,
                             *is_final,
+                            *speech_final,
                             *start_ms,
                             *end_ms,
                             *latency_ms,
                         ),
+                        SttEvent::UtteranceEnd { source } => session.on_utterance_end(*source),
                         SttEvent::Closed { .. } => {
                             open_streams.fetch_sub(1, Ordering::SeqCst);
                         }
@@ -179,11 +184,7 @@ impl LiveSession {
                 let now = started_at.elapsed().as_millis() as u64;
                 ticking.tick(now);
                 if let Some(a) = &ticking_analyzer {
-                    a.tick(
-                        now,
-                        ticking.heard_until(Source::Mic),
-                        ticking.heard_until(Source::Sistema),
-                    );
+                    a.tick(now, &ticking.heard());
                 }
             }
         });

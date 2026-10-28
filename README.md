@@ -10,7 +10,7 @@ Todas as fases do roadmap estão no código (0 a 5). Ainda falta validar numa en
 - **Transcrição:** uma conexão por fonte com a Deepgram (Nova-3, `pt-BR`), com parciais, termos difíceis do perfil e reconexão automática.
 - **Eco:** fala do microfone que repete o entrevistador no mesmo intervalo é descartada (sem fone, a caixa vaza pro microfone).
 - **Perfil:** formulário com caixas separadas (resumo, jeito de falar, experiências, histórias com situação, ação e resultado, habilidades, o que ainda não domina, termos). Fica gravado como Markdown; importar e exportar `.md` continuam valendo.
-- **Ao vivo:** a cada pergunta do entrevistador, uma resposta pronta pra falar, só com fatos do perfil, no tamanho da pergunta e no seu jeito de falar. Ela é refeita enquanto ele pergunta e congela quando você começa a responder. Dá pra voltar e avançar entre as respostas; com *Acompanhar* ligado, a tela segue sempre a pergunta mais nova. Marcação (Ctrl+Shift+M) e pausa da transcrição. O app pede que você confirme que a empresa permite assistência. `cargo run --example candidato_texto -- perfis/exemplo-backend.md ../testes/candidato-backend.txt` simula uma entrevista só com texto.
+- **Ao vivo:** a cada pergunta do entrevistador, uma resposta pronta pra falar, só com fatos do perfil, no tamanho da pergunta e no seu jeito de falar. Chega em streaming (a primeira frase, curta, aparece antes do resto) e é refeita enquanto ele pergunta, usando também o parcial da transcrição; quando ele para de falar, a versão final cancela a que estava no ar. Congela quando você começa a responder (um "uhum" seu no meio da pergunta não conta). Na troca de pergunta a tela mostra "Nova pergunta" em vez da resposta antiga. O que você já falou da resposta fica apagado, como num teleprompter; dá pra aumentar a letra e esconder a transcrição (*Só a resposta*). Dá pra voltar e avançar entre as respostas; com *Acompanhar* ligado, a tela segue sempre a pergunta mais nova. Marcação (Ctrl+Shift+M) e pausa da transcrição. O app pede que você confirme que a empresa permite assistência. `cargo run --example candidato_texto -- perfis/exemplo-backend.md ../testes/candidato-backend.txt` simula uma entrevista só com texto.
 - **Parecer:** evidências a favor e contra por competência com trecho e minuto, pontos do perfil confirmados ou não, o que preparar pras próximas entrevistas. Exporta em Markdown e PDF.
 - **Privacidade:** chaves no Credential Manager; tudo no SQLite local; confirmação obrigatória antes de iniciar; indicador de gravação na bandeja e no título; retenção automática da transcrição; apagar sessão, transcrição ou tudo.
 - **LLM de cada um:** Anthropic (padrão: `claude-haiku-5-5` ao vivo, pela velocidade, e `claude-opus-5-5` com esforço `high` nas notas) ou qualquer API compatível com OpenAI (OpenAI, Groq, OpenRouter, Ollama, LM Studio).
@@ -45,7 +45,8 @@ A sonda roda o mesmo caminho do app (captura → transcrição → sessão → a
 ```bash
 cd src-tauri
 cargo run --example montar_eco -- ../testes          # monta eco-mic.wav e eco-sistema.wav
-cargo run --example llm_falso                         # LLM falso em 127.0.0.1:11435 (outro terminal)
+cargo run --example llm_falso                         # LLM falso em 127.0.0.1:11435 (outro terminal), com streaming
+LLM_URL=http://127.0.0.1:11435/v1 cargo run --example candidato_texto -- perfis/exemplo-backend.md ../testes/candidato-backend.txt
 cargo run --example sonda -- --arquivo ../testes/eco-sistema.wav --mic-arquivo ../testes/eco-mic.wav \
   --esperado ../testes/resposta-pagamentos.txt --esperado-mic ../testes/eco-mic-esperado.txt \
   --perfil perfis/exemplo-backend.md --llm-url http://127.0.0.1:11435/v1 --notas

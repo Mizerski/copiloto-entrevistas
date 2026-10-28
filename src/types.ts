@@ -49,11 +49,15 @@ export type Answer = {
   turn: number;
   tMs: number;
   question: string;
+  /** A fala pronta, ou o começo dela enquanto `done` for falso. */
   text: string;
+  /** Do pedido até o primeiro pedaço do texto. */
   latencyMs: number;
+  done: boolean;
 };
 
 export type AnalysisEvent =
+  | { kind: "question"; turn: number; question: string }
   | { kind: "answer"; answer: Answer }
   | { kind: "status"; state: string; message: string | null; latencyMs: number | null };
 

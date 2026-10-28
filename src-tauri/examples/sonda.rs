@@ -243,7 +243,7 @@ fn main() {
                 other => println!("{other:?}"),
             }),
             on_analysis: Arc::new(|event| match event {
-                AnalysisEvent::Answer { answer: a } => {
+                AnalysisEvent::Answer { answer: a } if a.done => {
                     println!(
                         "    RESPOSTA {} ({} ms, pergunta até {}): {}",
                         a.turn + 1,
@@ -263,6 +263,8 @@ fn main() {
                         .unwrap_or_default(),
                     message.map(|m| format!(" ({m})")).unwrap_or_default()
                 ),
+                // Pergunta em andamento e pedaços da resposta ainda chegando.
+                _ => {}
             }),
         }
     };

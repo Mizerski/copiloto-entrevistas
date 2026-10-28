@@ -46,6 +46,9 @@ fn handle(stream: TcpStream) -> std::io::Result<()> {
         .as_str()
         .unwrap_or_default();
 
+    if request["stream"] == true {
+        return stream_answer(stream, user);
+    }
     let content = if system.contains("\"cobertura\"") {
         analysis(system, user)
     } else if system.contains("\"competencias\"") {
@@ -71,6 +74,34 @@ fn handle(stream: TcpStream) -> std::io::Result<()> {
         response.len(),
         response
     )
+}
+
+/// Resposta sugerida em streaming (Server-Sent Events), uma palavra por vez, repetindo o
+/// fim da pergunta pra dar pra ver qual versão chegou.
+fn stream_answer(mut stream: TcpStream, user: &str) -> std::io::Result<()> {
+    let question = user
+        .lines()
+        .rev()
+        .find_map(|l| l.split_once("Entrevistador").map(|(_, t)| t))
+        .unwrap_or_default();
+    let tail: Vec<&str> = question.split_whitespace().rev().take(6).collect();
+    let text = format!(
+        "Resposta pra \"{}\".\n\nSegundo parágrafo com **um destaque**.",
+        tail.into_iter().rev().collect::<Vec<_>>().join(" ")
+    );
+    println!("stream → {}", preview(&text));
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+    )?;
+    for word in text.split_inclusive(' ') {
+        let chunk = json!({ "model": "falso", "choices": [{ "delta": { "content": word } }] });
+        write!(stream, "data: {chunk}\n\n")?;
+        stream.flush()?;
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+    let usage = json!({ "model": "falso", "choices": [], "usage": { "prompt_tokens": user.len() / 4, "completion_tokens": 30 } });
+    write!(stream, "data: {usage}\n\ndata: [DONE]\n\n")
 }
 
 /// Análise de uma resposta: a primeira competência do kit, forte, citando as primeiras

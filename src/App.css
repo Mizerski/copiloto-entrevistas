@@ -215,9 +215,78 @@ body,
   margin-bottom: 0;
 }
 
+/* Marca-texto: a palavra que não pode faltar salta aos olhos sem ler a frase toda. */
 .balloon-text strong {
   font-weight: 600;
   color: var(--gray-12);
+  background: var(--orange-a4);
+  border-radius: 3px;
+  padding: 0 0.15em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* Teleprompter: o que você já falou apaga; o próximo parágrafo ganha uma barra ao lado. */
+.balloon-text p {
+  transition: opacity 0.3s ease-out;
+  border-left: 2px solid transparent;
+  margin-left: -10px;
+  padding-left: 8px;
+}
+
+.balloon-text p.spoken {
+  opacity: 0.4;
+}
+
+.balloon-text p.next {
+  border-left-color: var(--orange-9);
+}
+
+.balloon-text p.spoken strong {
+  background: transparent;
+}
+
+/* Texto ainda chegando: um cursor piscando no fim. */
+.balloon-text .typing {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-top: -0.5em;
+  vertical-align: middle;
+  background: var(--orange-9);
+  border-radius: 1px;
+  animation: typing-blink 1s steps(2, start) infinite;
+}
+
+@keyframes typing-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+.live-question {
+  margin: 0;
+  color: var(--gray-12);
+}
+
+.preparing {
+  animation: preparing-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes preparing-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.font-step {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.font-step.small {
+  font-size: 9px;
 }
 
 @keyframes balloon-in {
@@ -227,7 +296,9 @@ body,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .balloon-text {
+  .balloon-text,
+  .balloon-text .typing,
+  .preparing {
     animation: none;
   }
 }

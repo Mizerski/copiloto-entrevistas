@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { formatClock } from "./format";
 import { SOURCES, SOURCE_LABEL, type Mark, type Segment, type Source } from "./types";
 
@@ -43,7 +43,10 @@ function toItems(segments: Segment[], marks: Mark[]): Item[] {
   return items;
 }
 
-export function Transcript({ segments, partials, marks = [], follow, labels = SOURCE_LABEL }: Props) {
+const NO_MARKS: Mark[] = [];
+
+/** Com `memo`, o relógio e os medidores da sessão não redesenham a transcrição inteira. */
+export const Transcript = memo(function Transcript({ segments, partials, marks = NO_MARKS, follow, labels = SOURCE_LABEL }: Props) {
   const end = useRef<HTMLDivElement>(null);
   const items = toItems(segments, marks);
   // Com o candidato falando, um parcial no microfone quase sempre é eco ou conversa
@@ -100,7 +103,7 @@ export function Transcript({ segments, partials, marks = [], follow, labels = SO
       <div ref={end} />
     </div>
   );
-}
+});
 
 /** Insere mantendo a ordem do momento da fala (as fontes chegam fora de ordem). */
 export function insertSegment(list: Segment[], segment: Segment): Segment[] {

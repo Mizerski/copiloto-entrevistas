@@ -98,6 +98,55 @@ function SwitchRow({ label, checked, onChange, disabled }: {
   );
 }
 
+const READING_KEY = "copiloto.so-resposta";
+
+function loadReading() {
+  try {
+    return localStorage.getItem(READING_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Os medidores redesenham a cada quadro; isolados aqui, o resto da tela (transcrição,
+ * resposta) não redesenha junto. */
+function LevelMeters({ active }: { active: boolean }) {
+  const [levels, setLevels] = useState<Record<Source, number>>({ mic: 0, sistema: 0 });
+  useEffect(() => {
+    if (!active) {
+      setLevels({ mic: 0, sistema: 0 });
+      return;
+    }
+    const last: Record<Source, number> = { mic: 0, sistema: 0 };
+    const off = listen<CaptureEvent>("captura", ({ payload: e }) => {
+      if (e.kind === "level") last[e.source] = e.rms;
+    });
+    // Níveis chegam a 20 Hz por fonte; a barra redesenha a cada quadro, se mudou.
+    let frame = 0;
+    const tick = () => {
+      setLevels((prev) => (prev.mic === last.mic && prev.sistema === last.sistema ? prev : { ...last }));
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => {
+      off.then((f) => f());
+      cancelAnimationFrame(frame);
+    };
+  }, [active]);
+  return (
+    <Flex direction="column" gap="1" className="grow" minWidth="0">
+      {SOURCES.map((s) => (
+        <Flex key={s} align="center" gap="2">
+          <Text size="1" color="gray" className="meter-label">
+            {SOURCE_LABEL[s]}
+          </Text>
+          <Progress size="1" value={meterPercent(levels[s])} color="green" className="meter" />
+        </Flex>
+      ))}
+    </Flex>
+  );
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>("sessao");
   const [phase, setPhase] = useState<Phase>("setup");
@@ -123,20 +172,20 @@ function App() {
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [finished, setFinished] = useState<SessionFull | null>(null);
   const [now, setNow] = useState(Date.now());
-  const [levels, setLevels] = useState<Record<Source, number>>({ mic: 0, sistema: 0 });
   const [segments, setSegments] = useState<Segment[]>([]);
   const [partials, setPartials] = useState<Record<Source, string>>(EMPTY_TEXT);
   const [latency, setLatency] = useState<Record<Source, number[]>>({ mic: [], sistema: [] });
   const [echoes, setEchoes] = useState(0);
   const [reconnecting, setReconnecting] = useState<Source | null>(null);
   const [answers, setAnswers] = useState<Answer[]>([]);
+  const [question, setQuestion] = useState<{ turn: number; question: string } | null>(null);
+  const [readingOnly, setReadingOnly] = useState(loadReading);
   const [marks, setMarks] = useState<Mark[]>([]);
   const [paused, setPaused] = useState(false);
   const [onTop, setOnTop] = useState(false);
   const [hidden, setHidden] = useState(false);
 
   const [log, setLog] = useState<string[]>([]);
-  const lastLevel = useRef<Record<Source, number>>({ mic: 0, sistema: 0 });
   const startedAtRef = useRef(0);
   const heardSistema = useRef(false);
   const hasOtherSide = useRef(false);
@@ -180,7 +229,6 @@ function App() {
     const subscriptions = [
       listen<CaptureEvent>("captura", ({ payload: e }) => {
         if (e.kind === "level") {
-          lastLevel.current[e.source] = e.rms;
           if (e.source === "sistema" && e.rms > HEARD_RMS) heardSistema.current = true;
         }
         else if (e.kind === "started") addLog(`${SOURCE_LABEL[e.source]}: capturando (${e.format})`);
@@ -217,7 +265,8 @@ function App() {
         }
       }),
       listen<AnalysisEvent>("analise", ({ payload: e }) => {
-        if (e.kind === "answer") setAnswers((list) => upsertAnswer(list, e.answer));
+        if (e.kind === "question") setQuestion({ turn: e.turn, question: e.question });
+        else if (e.kind === "answer") setAnswers((list) => upsertAnswer(list, e.answer));
         else if (e.kind === "status" && e.state === "erro") addLog(`Análise: ${e.message}`);
       }),
       listen<number>("marcacao", ({ payload }) => {
@@ -226,17 +275,9 @@ function App() {
       }),
     ];
 
-    // Níveis chegam a 20 Hz por fonte; a tela redesenha a cada quadro.
-    let frame = 0;
-    const tick = () => {
-      setLevels({ ...lastLevel.current });
-      frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
     const clock = setInterval(() => setNow(Date.now()), 1000);
     return () => {
       subscriptions.forEach((s) => s.then((off) => off()));
-      cancelAnimationFrame(frame);
       clearInterval(clock);
     };
   }, []);
@@ -267,6 +308,7 @@ function App() {
     setEchoes(0);
     setReconnecting(null);
     setAnswers([]);
+    setQuestion(null);
     setMarks([]);
     setPaused(false);
     try {
@@ -302,7 +344,6 @@ function App() {
     setPhase("stopping");
     await invoke("stop_session");
     getCurrentWindow().setTitle("Copiloto").catch(() => {});
-    lastLevel.current = { mic: 0, sistema: 0 };
     setPartials(EMPTY_TEXT);
     setReconnecting(null);
     setPhase("done");
@@ -342,6 +383,15 @@ function App() {
   async function toggleOnTop(value: boolean) {
     await getCurrentWindow().setAlwaysOnTop(value);
     setOnTop(value);
+  }
+
+  function toggleReading(value: boolean) {
+    setReadingOnly(value);
+    try {
+      localStorage.setItem(READING_KEY, value ? "1" : "0");
+    } catch {
+      // Sem armazenamento, a escolha só vale até fechar o app.
+    }
   }
 
   async function toggleHidden(value: boolean) {
@@ -470,16 +520,7 @@ function App() {
               {phase === "stopping" ? "Salvando…" : "Sessão salva"}
             </Text>
           )}
-          <Flex direction="column" gap="1" className="grow" minWidth="0">
-            {SOURCES.map((s) => (
-              <Flex key={s} align="center" gap="2">
-                <Text size="1" color="gray" className="meter-label">
-                  {SOURCE_LABEL[s]}
-                </Text>
-                <Progress size="1" value={meterPercent(levels[s])} color="green" className="meter" />
-              </Flex>
-            ))}
-          </Flex>
+          <LevelMeters active={phase === "running"} />
           {phase === "running" && (
             <Button color="red" onClick={stop}>
               <StopIcon /> Parar
@@ -546,16 +587,24 @@ function App() {
       )}
 
       {phase === "running" && (
-        <AnswerFeed answers={answers} waiting={segments.some((s) => s.source === "sistema")} />
+        <AnswerFeed
+          answers={answers}
+          question={question}
+          waiting={segments.some((s) => s.source === "sistema")}
+          segments={segments}
+          micPartial={partials.mic}
+        />
       )}
 
-      <Card size="1" className="transcript-card">
-        <ScrollArea type="auto" scrollbars="vertical" className="transcript-scroll">
-          <Box p="2" pr="4">
-            <Transcript segments={segments} partials={partials} marks={marks} follow />
-          </Box>
-        </ScrollArea>
-      </Card>
+      {!(phase === "running" && readingOnly) && (
+        <Card size="1" className="transcript-card">
+          <ScrollArea type="auto" scrollbars="vertical" className="transcript-scroll">
+            <Box p="2" pr="4">
+              <Transcript segments={segments} partials={partials} marks={marks} follow />
+            </Box>
+          </ScrollArea>
+        </Card>
+      )}
 
       <Flex direction="column" gap="2">
         <Text size="1" color="gray" className="tabular">
@@ -565,7 +614,11 @@ function App() {
         <Flex gap="4" wrap="wrap">
           <SwitchRow label="Sempre no topo" checked={onTop} onChange={toggleOnTop} />
           <SwitchRow label="Esconder do compartilhamento de tela" checked={hidden} onChange={toggleHidden} />
+          <SwitchRow label="Só a resposta (esconde a transcrição)" checked={readingOnly} onChange={toggleReading} />
         </Flex>
+        <Text size="1" color="gray">
+          Dica: com Sempre no topo, deixe a janela logo abaixo da câmera. Assim você lê olhando quase pra lente.
+        </Text>
       </Flex>
     </Flex>
   );

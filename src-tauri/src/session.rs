@@ -24,6 +24,20 @@ const ECHO_MIN_OVERLAP: f32 = 0.6;
 /// Por quanto tempo guardar o que o outro lado disse, pra comparar.
 const RECENT_MS: u64 = 30_000;
 
+/// O que a sessão sabe, a cada instante, de quem está falando.
+#[derive(Debug, Clone, Default)]
+pub struct Heard {
+    /// Até quando o candidato foi ouvido, contando os parciais.
+    pub mic_until: u64,
+    /// O mesmo pro entrevistador.
+    pub interviewer_until: u64,
+    /// O que o entrevistador está falando e ainda não virou fala final.
+    pub interviewer_partial: String,
+    pub interviewer_partial_start: u64,
+    /// A transcrição já avisou que o entrevistador parou, e ele não voltou a falar.
+    pub interviewer_ended: bool,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(
     tag = "kind",
@@ -57,6 +71,10 @@ struct Inner {
     sistema_activity: VecDeque<(u64, u64)>,
     /// Até quando o microfone foi ouvido (parciais e finais).
     mic_heard_until: u64,
+    /// O que o outro lado está falando e a transcrição ainda não fechou, e quando começou.
+    sistema_partial: (String, u64),
+    /// Até onde o outro lado falou quando a transcrição avisou que ele parou.
+    sistema_ended_at: u64,
     echoes: usize,
     finished: bool,
 }
@@ -80,6 +98,31 @@ impl Session {
         self.inner.lock().unwrap().finished
     }
 
+    /// O que já se sabe de quem está falando, pra fechar pergunta e resposta.
+    pub fn heard(&self) -> Heard {
+        let interviewer_until = self.heard_until(Source::Sistema);
+        let inner = self.inner.lock().unwrap();
+        Heard {
+            mic_until: inner.mic_heard_until,
+            interviewer_until,
+            interviewer_partial: inner.sistema_partial.0.clone(),
+            interviewer_partial_start: inner.sistema_partial.1,
+            interviewer_ended: inner.sistema_ended_at > 0
+                && inner.sistema_ended_at >= interviewer_until,
+        }
+    }
+
+    /// A transcrição avisou que a fonte parou de falar (`UtteranceEnd`).
+    pub fn on_utterance_end(&self, source: Source) {
+        if source != Source::Sistema {
+            return;
+        }
+        let until = self.heard_until(Source::Sistema);
+        let mut inner = self.inner.lock().unwrap();
+        inner.sistema_partial = Default::default();
+        inner.sistema_ended_at = until;
+    }
+
     /// Até quando a fonte foi ouvida falando, contando os resultados parciais.
     pub fn heard_until(&self, source: Source) -> u64 {
         let inner = self.inner.lock().unwrap();
@@ -100,6 +143,7 @@ impl Session {
         source: Source,
         text: &str,
         is_final: bool,
+        speech_final: bool,
         start_ms: u64,
         end_ms: u64,
         latency_ms: u64,
@@ -111,6 +155,16 @@ impl Session {
         match source {
             Source::Sistema => inner.sistema_activity.push_back((start_ms, end_ms)),
             Source::Mic => inner.mic_heard_until = inner.mic_heard_until.max(end_ms),
+        }
+        if source == Source::Sistema {
+            if is_final {
+                inner.sistema_partial = Default::default();
+                if speech_final {
+                    inner.sistema_ended_at = end_ms;
+                }
+            } else {
+                inner.sistema_partial = (text.to_string(), start_ms);
+            }
         }
         if !is_final {
             return;

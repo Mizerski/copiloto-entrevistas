@@ -28,18 +28,30 @@ fn main() {
             if let Some(t) = l.strip_prefix("E:") {
                 Some((Source::Sistema, t.trim().to_string()))
             } else {
-                l.strip_prefix("C:").map(|t| (Source::Mic, t.trim().to_string()))
+                l.strip_prefix("C:")
+                    .map(|t| (Source::Mic, t.trim().to_string()))
             }
         })
         .collect();
     let job = args.get(2).cloned().unwrap_or_default();
 
-    let _ = secrets::init();
-    let key = secrets::load(Provider::Anthropic.key_name())
-        .ok()
-        .flatten()
-        .expect("salve a chave da Anthropic pelo app");
-    let llm = LlmClient::new(Slot::default_live(), Some(key)).expect("configurar a LLM");
+    // Com LLM_URL (ex.: o `llm_falso`), usa um servidor compatível com OpenAI no lugar do Claude.
+    let llm = if let Ok(url) = std::env::var("LLM_URL") {
+        let slot = Slot {
+            provider: Provider::Openai,
+            model: "falso".into(),
+            base_url: url,
+            effort: String::new(),
+        };
+        LlmClient::new(slot, None).expect("configurar a LLM")
+    } else {
+        let _ = secrets::init();
+        let key = secrets::load(Provider::Anthropic.key_name())
+            .ok()
+            .flatten()
+            .expect("salve a chave da Anthropic pelo app");
+        LlmClient::new(Slot::default_live(), Some(key)).expect("configurar a LLM")
+    };
 
     let db = Arc::new(Db::open_in_memory().expect("banco em memória"));
     let name = profile::parse(&profile_md).name;
@@ -79,8 +91,13 @@ fn main() {
     let printer = std::thread::spawn(move || {
         while let Ok(event) = rx.recv() {
             match event {
-                AnalysisEvent::Answer { answer: a } => {
-                    println!("    · resposta {} ({} ms): {}", a.turn + 1, a.latency_ms, a.text)
+                AnalysisEvent::Answer { answer: a } if a.done => {
+                    println!(
+                        "    · resposta {} ({} ms): {}",
+                        a.turn + 1,
+                        a.latency_ms,
+                        a.text
+                    )
                 }
                 AnalysisEvent::Status {
                     state,
@@ -101,9 +118,12 @@ fn main() {
         };
         println!("\n{who} [{}]: {text}", clock(now));
         let words: Vec<&str> = text.split_whitespace().collect();
-        for chunk in words.chunks(10) {
+        let chunks: Vec<&[&str]> = words.chunks(10).collect();
+        for (i, chunk) in chunks.iter().enumerate() {
             let end = now + 4_000;
-            session.on_transcript(source, &chunk.join(" "), true, now, end, 0);
+            // Só o último pedaço fecha a fala, como a Deepgram faz na pausa.
+            let speech_final = i + 1 == chunks.len();
+            session.on_transcript(source, &chunk.join(" "), true, speech_final, now, end, 0);
             now = end;
             std::thread::sleep(Duration::from_millis(4_000));
         }
@@ -111,11 +131,7 @@ fn main() {
         for _ in 0..8 {
             now += 500;
             session.tick(now);
-            analyzer.tick(
-                now,
-                session.heard_until(Source::Mic),
-                session.heard_until(Source::Sistema),
-            );
+            analyzer.tick(now, &session.heard());
             std::thread::sleep(Duration::from_millis(500));
         }
         if source == Source::Sistema {

@@ -91,6 +91,14 @@ pub struct Prompt<'a> {
     pub max_tokens: u32,
 }
 
+/// Um pedido de texto livre, entregue aos pedaços (`stream_text`).
+pub struct TextPrompt<'a> {
+    pub system: &'a str,
+    pub stable_context: &'a str,
+    pub user: &'a str,
+    pub max_tokens: u32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Usage {
@@ -142,6 +150,157 @@ impl LlmClient {
         Ok((value, usage))
     }
 
+    /// Texto livre em streaming: `on_text` recebe o texto inteiro até agora a cada pedaço
+    /// novo. Devolve o texto final. Parar no limite de tokens não é erro: o que chegou já
+    /// está na tela.
+    pub async fn stream_text(
+        &self,
+        prompt: &TextPrompt<'_>,
+        mut on_text: impl FnMut(&str) + Send,
+    ) -> Result<(String, Usage), String> {
+        let started = Instant::now();
+        let (text, mut usage) = match self.slot.provider {
+            Provider::Anthropic => self.anthropic_stream(prompt, &mut on_text).await?,
+            Provider::Openai => self.openai_stream(prompt, &mut on_text).await?,
+        };
+        usage.latency_ms = started.elapsed().as_millis() as u64;
+        Ok((text, usage))
+    }
+
+    async fn anthropic_stream(
+        &self,
+        p: &TextPrompt<'_>,
+        on_text: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<(String, Usage), String> {
+        let mut body = json!({
+            "model": self.slot.model,
+            "max_tokens": p.max_tokens,
+            "system": anthropic_system(p.system, p.stable_context),
+            "messages": [{ "role": "user", "content": p.user }],
+            "stream": true,
+        });
+        if !self.slot.effort.is_empty() {
+            body["output_config"] = json!({ "effort": self.slot.effort });
+        }
+        let response = self
+            .anthropic_request(&mut body)
+            .send()
+            .await
+            .map_err(network_error)?;
+        if !response.status().is_success() {
+            return Err(read_body(response).await.err().unwrap_or_default());
+        }
+        let mut text = String::new();
+        let mut usage = Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_tokens: 0,
+            latency_ms: 0,
+            model: self.slot.model.clone(),
+        };
+        let mut refused = false;
+        read_sse(response, |data| {
+            let v: Value = serde_json::from_str(data).unwrap_or_default();
+            match v["type"].as_str().unwrap_or_default() {
+                "message_start" => {
+                    let u = &v["message"]["usage"];
+                    usage.input_tokens = u["input_tokens"].as_u64().unwrap_or(0)
+                        + u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+                    usage.cached_tokens = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
+                    if let Some(model) = v["message"]["model"].as_str() {
+                        usage.model = model.to_string();
+                    }
+                }
+                "content_block_delta" if v["delta"]["type"] == "text_delta" => {
+                    text.push_str(v["delta"]["text"].as_str().unwrap_or_default());
+                    on_text(&text);
+                }
+                "message_delta" => {
+                    refused |= v["delta"]["stop_reason"] == "refusal";
+                    if let Some(n) = v["usage"]["output_tokens"].as_u64() {
+                        usage.output_tokens = n;
+                    }
+                }
+                "error" => {
+                    let message = v["error"]["message"].as_str().unwrap_or(data);
+                    return Err(format!("o provedor interrompeu a resposta: {message}"));
+                }
+                _ => {}
+            }
+            Ok(())
+        })
+        .await?;
+        if refused {
+            return Err("o modelo recusou o pedido".into());
+        }
+        Ok((text, usage))
+    }
+
+    async fn openai_stream(
+        &self,
+        p: &TextPrompt<'_>,
+        on_text: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<(String, Usage), String> {
+        let url = format!(
+            "{}/chat/completions",
+            self.slot.base_url.trim_end_matches('/')
+        );
+        let mut body = json!({
+            "model": self.slot.model,
+            "max_tokens": p.max_tokens,
+            "temperature": 0.4,
+            "messages": [
+                { "role": "system", "content": format!("{}\n\n{}", p.system, p.stable_context) },
+                { "role": "user", "content": p.user }
+            ],
+            "stream": true,
+            "stream_options": { "include_usage": true },
+        });
+        let mut response = self.post_openai(&url, &body).await?;
+        if response.status() == reqwest::StatusCode::BAD_REQUEST {
+            // Nem todo servidor compatível aceita `stream_options`.
+            body.as_object_mut().unwrap().remove("stream_options");
+            response = self.post_openai(&url, &body).await?;
+        }
+        if !response.status().is_success() {
+            return Err(read_body(response).await.err().unwrap_or_default());
+        }
+        let mut text = String::new();
+        let mut usage = Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_tokens: 0,
+            latency_ms: 0,
+            model: self.slot.model.clone(),
+        };
+        read_sse(response, |data| {
+            if data == "[DONE]" {
+                return Ok(());
+            }
+            let v: Value = serde_json::from_str(data).unwrap_or_default();
+            if let Some(delta) = v["choices"][0]["delta"]["content"].as_str()
+                && !delta.is_empty()
+            {
+                text.push_str(delta);
+                on_text(&text);
+            }
+            let u = &v["usage"];
+            if u.is_object() {
+                usage.input_tokens = u["prompt_tokens"].as_u64().unwrap_or(0);
+                usage.output_tokens = u["completion_tokens"].as_u64().unwrap_or(0);
+                usage.cached_tokens = u["prompt_tokens_details"]["cached_tokens"]
+                    .as_u64()
+                    .unwrap_or(0);
+            }
+            if let Some(model) = v["model"].as_str() {
+                usage.model = model.to_string();
+            }
+            Ok(())
+        })
+        .await?;
+        Ok((text, usage))
+    }
+
     /// Pedido mínimo pra conferir chave, modelo e endereço.
     pub async fn test(&self) -> Result<Usage, String> {
         let schema = json!({
@@ -161,27 +320,8 @@ impl LlmClient {
         Ok(usage)
     }
 
-    async fn anthropic(&self, p: &Prompt<'_>) -> Result<(String, Usage), String> {
-        let mut system = vec![json!({ "type": "text", "text": p.system })];
-        if !p.stable_context.is_empty() {
-            // Kit e currículo se repetem em toda chamada da sessão: ficam no cache.
-            system.push(json!({
-                "type": "text",
-                "text": p.stable_context,
-                "cache_control": { "type": "ephemeral" }
-            }));
-        }
-        let mut output_config = json!({ "format": { "type": "json_schema", "schema": p.schema } });
-        if !self.slot.effort.is_empty() {
-            output_config["effort"] = json!(self.slot.effort);
-        }
-        let mut body = json!({
-            "model": self.slot.model,
-            "max_tokens": p.max_tokens,
-            "system": system,
-            "messages": [{ "role": "user", "content": p.user }],
-            "output_config": output_config,
-        });
+    /// Cabeçalhos e corpo de um pedido à Anthropic; liga o fallback onde o modelo aceita.
+    fn anthropic_request(&self, body: &mut Value) -> reqwest::RequestBuilder {
         let mut request = self
             .http
             .post(ANTHROPIC_URL)
@@ -191,7 +331,26 @@ impl LlmClient {
             body["fallbacks"] = json!("default");
             request = request.header("anthropic-beta", ANTHROPIC_FALLBACK_BETA);
         }
-        let response = request.json(&body).send().await.map_err(network_error)?;
+        request.json(body)
+    }
+
+    async fn anthropic(&self, p: &Prompt<'_>) -> Result<(String, Usage), String> {
+        let mut output_config = json!({ "format": { "type": "json_schema", "schema": p.schema } });
+        if !self.slot.effort.is_empty() {
+            output_config["effort"] = json!(self.slot.effort);
+        }
+        let mut body = json!({
+            "model": self.slot.model,
+            "max_tokens": p.max_tokens,
+            "system": anthropic_system(p.system, p.stable_context),
+            "messages": [{ "role": "user", "content": p.user }],
+            "output_config": output_config,
+        });
+        let response = self
+            .anthropic_request(&mut body)
+            .send()
+            .await
+            .map_err(network_error)?;
         let v = read_body(response).await?;
         if v["stop_reason"] == "refusal" {
             return Err("o modelo recusou o pedido".into());
@@ -271,6 +430,38 @@ impl LlmClient {
         }
         request.send().await.map_err(network_error)
     }
+}
+
+fn anthropic_system(system: &str, stable_context: &str) -> Value {
+    let mut blocks = vec![json!({ "type": "text", "text": system })];
+    if !stable_context.is_empty() {
+        // Kit e currículo se repetem em toda chamada da sessão: ficam no cache.
+        blocks.push(json!({
+            "type": "text",
+            "text": stable_context,
+            "cache_control": { "type": "ephemeral" }
+        }));
+    }
+    Value::Array(blocks)
+}
+
+/// Lê um corpo em Server-Sent Events e entrega o `data:` de cada linha.
+async fn read_sse(
+    mut response: reqwest::Response,
+    mut on_data: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut buffer: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+        buffer.extend_from_slice(&chunk);
+        while let Some(end) = buffer.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = buffer.drain(..=end).collect();
+            let line = String::from_utf8_lossy(&line);
+            if let Some(data) = line.trim_end().strip_prefix("data:") {
+                on_data(data.trim())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn network_error(e: reqwest::Error) -> String {
